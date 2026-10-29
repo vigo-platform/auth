@@ -3,14 +3,15 @@ name: Docker Build & Push
 on:
   push:
     tags:
+      - 'build-and-push'
       - 'build-and-push-*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker image tag (e.g. v1.0.0, 1.2.0)'
-        required: true
+        description: 'Docker image tag (leave empty to use commit sha)'
+        required: false
         type: string
-        default: 'v1.0.0'
+        default: ''
 
 permissions:
   contents: read
@@ -43,22 +44,22 @@ jobs:
             INPUT_TAG="${{ github.event.inputs.tag }}"
             IMAGE_TAG="$(echo "$INPUT_TAG" | xargs)"
             if [ -z "$IMAGE_TAG" ]; then
-              echo "::error::Docker image tag cannot be empty in manual dispatch"
-              exit 1
+              IMAGE_TAG="sha-${SHORT_SHA}"
             fi
             TRIGGER_TYPE="Manual Dispatch"
             GIT_TAG="N/A"
           else
             RAW_REF="${{ github.ref_name }}"
             PREFIX="build-and-push-"
-            if [[ "$RAW_REF" == "$PREFIX"* ]]; then
+            if [ "$RAW_REF" = "build-and-push" ] || [ "$RAW_REF" = "build-and-push-" ]; then
+              IMAGE_TAG="sha-${SHORT_SHA}"
+            elif [[ "$RAW_REF" == "$PREFIX"* ]]; then
               IMAGE_TAG="${RAW_REF#$PREFIX}"
+              if [ -z "$IMAGE_TAG" ]; then
+                IMAGE_TAG="sha-${SHORT_SHA}"
+              fi
             else
               IMAGE_TAG="$RAW_REF"
-            fi
-            if [ -z "$IMAGE_TAG" ]; then
-              echo "::error::Version could not be extracted from Git tag '$RAW_REF'"
-              exit 1
             fi
             TRIGGER_TYPE="Git Tag"
             GIT_TAG="$RAW_REF"

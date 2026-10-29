@@ -40,3 +40,9 @@ build/
 .env.*
 !.env.example
 
+### Cryptographic Keys ###
+.keys/
+*.pem
+*.key
+
+

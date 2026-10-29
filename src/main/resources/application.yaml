@@ -2,6 +2,18 @@ spring:
   application:
     name: auth
 
+app:
+  public-paths:
+    - "/.well-known/jwks.json"
+    - "/actuator/**"
+    - "/error"
+    - "/favicon.ico"
+
+jwt:
+  key-id: ${JWT_KEY_ID:vigo-auth-key-1}
+  private-key-path: ${JWT_PRIVATE_KEY_PATH:.keys/private_key.pem}
+  public-key-path: ${JWT_PUBLIC_KEY_PATH:.keys/public_key.pem}
+
   datasource:
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}

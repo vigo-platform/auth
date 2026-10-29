@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TODO: Remove this file in Docker -->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <appender name="VECTOR_TCP" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+        <destination>localhost:5044</destination>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service_name":"auth"}</customFields>
+        </encoder>
+
+        <ringBufferSize>8192</ringBufferSize>
+        <connectionTimeout>2000</connectionTimeout>
+        <reconnectionDelay>5000</reconnectionDelay>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+        <appender-ref ref="VECTOR_TCP" />
+    </root>
+</configuration>

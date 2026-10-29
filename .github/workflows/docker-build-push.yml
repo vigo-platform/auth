@@ -1,52 +1,230 @@
-name: Build and Push Docker Image
+name: Docker Build & Push
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'build-and-push-*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Custom image tag (optional - e.g. v1.0.0, dev, staging)'
-        required: false
+        description: 'Docker image tag (e.g. v1.0.0, 1.2.0)'
+        required: true
         type: string
-        default: ''
+        default: 'v1.0.0'
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY_IMAGE: logtaha/vigo-auth-service
+  REGISTRY_NAME: Docker Hub
 
 jobs:
   build-and-push:
+    name: Build & Push Docker Image
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
+        id: checkout
         uses: actions/checkout@v4
 
+      - name: Resolve Docker Image Tag
+        id: resolve_tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo "${GITHUB_SHA::7}")"
+          RAW_COMMIT_MSG="$(git log -1 --pretty=%s 2>/dev/null || echo 'N/A')"
+          CLEAN_COMMIT_MSG="$(echo "$RAW_COMMIT_MSG" | tr '\n\r' ' ' | sed 's/[|"]/ /g')"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT_TAG="${{ github.event.inputs.tag }}"
+            IMAGE_TAG="$(echo "$INPUT_TAG" | xargs)"
+            if [ -z "$IMAGE_TAG" ]; then
+              echo "::error::Docker image tag cannot be empty in manual dispatch"
+              exit 1
+            fi
+            TRIGGER_TYPE="Manual Dispatch"
+            GIT_TAG="N/A"
+          else
+            RAW_REF="${{ github.ref_name }}"
+            PREFIX="build-and-push-"
+            if [[ "$RAW_REF" == "$PREFIX"* ]]; then
+              IMAGE_TAG="${RAW_REF#$PREFIX}"
+            else
+              IMAGE_TAG="$RAW_REF"
+            fi
+            if [ -z "$IMAGE_TAG" ]; then
+              echo "::error::Version could not be extracted from Git tag '$RAW_REF'"
+              exit 1
+            fi
+            TRIGGER_TYPE="Git Tag"
+            GIT_TAG="$RAW_REF"
+          fi
+
+          FULL_IMAGE="${REGISTRY_IMAGE}:${IMAGE_TAG}"
+
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "trigger_type=$TRIGGER_TYPE" >> "$GITHUB_OUTPUT"
+          echo "git_tag=$GIT_TAG" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "commit_msg=$CLEAN_COMMIT_MSG" >> "$GITHUB_OUTPUT"
+          echo "full_image=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
+
+          echo "Successfully resolved tag:"
+          echo "  Trigger: $TRIGGER_TYPE"
+          echo "  Git Tag: $GIT_TAG"
+          echo "  Image Tag: $IMAGE_TAG"
+          echo "  Full Target Image: $FULL_IMAGE"
+
       - name: Set up Docker Buildx
+        id: setup_buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
+        id: login
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: logtaha/vigo-auth-service
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=short
-            type=ref,event=branch
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
-
       - name: Build and push Docker image
+        id: build_push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.resolve_tag.outputs.full_image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Generate Job Summary
+        id: summary
+        if: always()
+        shell: bash
+        run: |
+          JOB_STATUS="${{ job.status }}"
+          TRIGGER="${{ steps.resolve_tag.outputs.trigger_type }}"
+          if [ -z "$TRIGGER" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              TRIGGER="Manual Dispatch"
+            else
+              TRIGGER="Git Tag"
+            fi
+          fi
+
+          GIT_TAG="${{ steps.resolve_tag.outputs.git_tag }}"
+          if [ -z "$GIT_TAG" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              GIT_TAG="${{ github.ref_name }}"
+            else
+              GIT_TAG="N/A"
+            fi
+          fi
+
+          IMAGE_TAG="${{ steps.resolve_tag.outputs.image_tag }}"
+          if [ -z "$IMAGE_TAG" ]; then
+            IMAGE_TAG="${{ github.event.inputs.tag || 'N/A' }}"
+          fi
+
+          FULL_IMAGE="${{ steps.resolve_tag.outputs.full_image }}"
+          if [ -z "$FULL_IMAGE" ]; then
+            FULL_IMAGE="${REGISTRY_IMAGE}:${IMAGE_TAG}"
+          fi
+
+          SHORT_SHA="${{ steps.resolve_tag.outputs.short_sha }}"
+          if [ -z "$SHORT_SHA" ]; then
+            SHORT_SHA="$(echo '${{ github.sha }}' | cut -c1-7)"
+          fi
+
+          COMMIT_MSG="${{ steps.resolve_tag.outputs.commit_msg || 'N/A' }}"
+          DIGEST="${{ steps.build_push.outputs.digest || 'N/A' }}"
+          REPO="${{ github.repository }}"
+          COMMIT_URL="https://github.com/${REPO}/commit/${{ github.sha }}"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${{ github.run_id }}"
+          DOCKERHUB_URL="https://hub.docker.com/r/${REGISTRY_IMAGE}"
+
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATUS_BADGE="✅ Success"
+            BUILD_STATUS="✅ Success"
+            PUSH_STATUS="✅ Success"
+            HEADER="# 🚀 Docker Build & Push"
+          else
+            STATUS_BADGE="❌ Failed"
+            HEADER="# ❌ Docker Build & Push Failed"
+
+            if [ "${{ steps.build_push.outcome }}" = "success" ]; then
+              BUILD_STATUS="✅ Success"
+              PUSH_STATUS="✅ Success"
+            elif [ "${{ steps.build_push.outcome }}" = "failure" ]; then
+              BUILD_STATUS="❌ Failed"
+              PUSH_STATUS="❌ Failed"
+            else
+              BUILD_STATUS="⏭️ Skipped"
+              PUSH_STATUS="⏭️ Skipped"
+            fi
+
+            FAILED_STEP="Unknown"
+            if [ "${{ steps.checkout.outcome }}" = "failure" ]; then
+              FAILED_STEP="Checkout repository"
+            elif [ "${{ steps.resolve_tag.outcome }}" = "failure" ]; then
+              FAILED_STEP="Resolve Docker Image Tag"
+            elif [ "${{ steps.setup_buildx.outcome }}" = "failure" ]; then
+              FAILED_STEP="Set up Docker Buildx"
+            elif [ "${{ steps.login.outcome }}" = "failure" ]; then
+              FAILED_STEP="Log in to Docker Hub"
+            elif [ "${{ steps.build_push.outcome }}" = "failure" ]; then
+              FAILED_STEP="Build and push Docker image"
+            fi
+          fi
+
+          {
+            echo "$HEADER"
+            echo ""
+            echo "## 📊 Execution Status"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| **Status** | $STATUS_BADGE |"
+            echo "| **Trigger** | $TRIGGER |"
+            if [ "$TRIGGER" = "Git Tag" ]; then
+              echo "| **Git Tag** | \`$GIT_TAG\` |"
+            else
+              echo "| **Manual Input Tag** | \`$IMAGE_TAG\` |"
+            fi
+            echo "| **Image Tag** | \`$IMAGE_TAG\` |"
+            echo "| **Repository** | \`$REPO\` |"
+            echo "| **Branch / Ref** | \`${{ github.ref_name }}\` |"
+            echo "| **Commit** | [\`$SHORT_SHA\`]($COMMIT_URL) |"
+            echo "| **Commit SHA (Full)** | \`${{ github.sha }}\` |"
+            echo "| **Commit Message** | $COMMIT_MSG |"
+            echo "| **Actor** | \`${{ github.actor }}\` |"
+            echo "| **Workflow Run Number** | # ${{ github.run_number }} |"
+            echo "| **Workflow Run ID** | [\`${{ github.run_id }}\`]($RUN_URL) |"
+            if [ "$JOB_STATUS" != "success" ]; then
+              echo "| **Failed Step** | ⚠️ \`$FAILED_STEP\` |"
+            fi
+            echo ""
+            echo "## 🐳 Docker Image"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| **Image** | [\`$FULL_IMAGE\`]($DOCKERHUB_URL) |"
+            echo "| **Registry** | $REGISTRY_NAME |"
+            echo "| **Build** | $BUILD_STATUS |"
+            echo "| **Push** | $PUSH_STATUS |"
+            if [ "$DIGEST" != "N/A" ]; then
+              echo "| **Digest** | \`$DIGEST\` |"
+            else
+              echo "| **Digest** | *N/A (Build/Push did not complete)* |"
+            fi
+            echo ""
+            echo "## 🔗 Links"
+            echo ""
+            echo "- 📝 [Commit Details ($SHORT_SHA)]($COMMIT_URL)"
+            echo "- ⚙️ [GitHub Actions Run # ${{ github.run_number }}]($RUN_URL)"
+            echo "- 📦 [Docker Hub Repository ($REGISTRY_IMAGE)]($DOCKERHUB_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,18 @@
+**/.git
+**/.gitignore
+**/.idea
+**/.vscode
+**/.gemini
+**/target
+**/build
+**/.mvn
+mvnw
+mvnw.cmd
+HELP.md
+
+# Sensitive files and keys - NEVER include in Docker image
+.env
+.env.*
+.keys/
+*.pem
+*.key

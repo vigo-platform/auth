@@ -1,0 +1,5 @@
+name: Server Info
+variables:
+  - name: baseUrl
+    value: http://localhost:8080
+    description: ""

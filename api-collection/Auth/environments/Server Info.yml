@@ -3,3 +3,6 @@ variables:
   - name: baseUrl
     value: http://localhost:8080
     description: ""
+  - name: userGrpcUrl
+    value: http://127.0.0.1:50051
+    description: ""

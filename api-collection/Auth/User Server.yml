@@ -1,0 +1,18 @@
+info:
+  name: User Server
+  type: grpc
+  seq: 2
+
+grpc:
+  url: "{{userGrpcUrl}}"
+  method: /vigo.user.v1.UserService/ChangeUserPassword
+  methodType: unary
+  message:
+    - title: message 1
+      message: |-
+        {
+          "user_id": "1",
+          "new_password_hash": "taha",
+          "expected_credential_version": 1
+        }
+  auth: inherit

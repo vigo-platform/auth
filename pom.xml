@@ -16,10 +16,29 @@
 
     <properties>
         <java.version>21</java.version>
+        <grpc-java.version>1.85.1</grpc-java.version>
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
     </properties>
 
+    <repositories>
+        <repository>
+            <id>github-vigo-contracts</id>
+            <url>https://maven.pkg.github.com/vigo-platform/api-contracts</url>
+        </repository>
+    </repositories>
+
     <dependencies>
+        <dependency>
+            <groupId>ir.vigoapp.contracts</groupId>
+            <artifactId>users-grpc-contract</artifactId>
+            <version>3.0.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>

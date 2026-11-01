@@ -26,6 +26,14 @@ app:
     - "/actuator/**"
     - "/error"
     - "/favicon.ico"
+  # Defaults for initializing a missing settings record; keep in sync with .env.example.
+  auth-defaults:
+    login-enabled: ${AUTH_DEFAULT_LOGIN_ENABLED:true}
+    register-enabled: ${AUTH_DEFAULT_REGISTER_ENABLED:true}
+    default-otp-channel: ${AUTH_DEFAULT_OTP_CHANNEL:EMAIL}
+    email-notification-enabled: ${AUTH_DEFAULT_EMAIL_NOTIFICATION_ENABLED:false}
+    sms-notification-enabled: ${AUTH_DEFAULT_SMS_NOTIFICATION_ENABLED:false}
+    in-app-notification-enabled: ${AUTH_DEFAULT_IN_APP_NOTIFICATION_ENABLED:false}
 
   user-grpc:
     host: ${USER_GRPC_HOST}

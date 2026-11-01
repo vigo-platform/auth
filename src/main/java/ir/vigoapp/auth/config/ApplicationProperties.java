@@ -1,5 +1,6 @@
 package ir.vigoapp.auth.config;
 
+import ir.vigoapp.auth.entity.OtpChannel;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -28,6 +29,30 @@ public class ApplicationProperties {
     @Valid
     @NotNull
     private UserGrpc userGrpc = new UserGrpc();
+
+    @Valid
+    @NotNull
+    private AuthDefaults authDefaults = new AuthDefaults();
+
+    /**
+     * Initial auth settings used only when no settings record exists.
+     *
+     * @version 1.0.0
+     * @author logTAHA
+     */
+    @Getter
+    @Setter
+    public static class AuthDefaults {
+        private boolean loginEnabled;
+        private boolean registerEnabled;
+
+        @NotNull
+        private OtpChannel defaultOtpChannel;
+
+        private boolean emailNotificationEnabled;
+        private boolean smsNotificationEnabled;
+        private boolean inAppNotificationEnabled;
+    }
 
     @Getter
     @Setter

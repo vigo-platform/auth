@@ -16,7 +16,8 @@ class UserGrpcConfigTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
             .withUserConfiguration(ApplicationProperties.class, UserGrpcConfig.class, UserGrpcClient.class)
-            .withPropertyValues("app.user-grpc.host=localhost", "app.user-grpc.port=50051");
+            .withPropertyValues("app.user-grpc.host=localhost", "app.user-grpc.port=50051",
+                    "app.auth-defaults.default-otp-channel=EMAIL");
 
     @Test
     void bindsApplicationPropertiesCreatesServiceAndClosesChannel() throws Exception {

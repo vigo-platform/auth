@@ -14,6 +14,17 @@ of silently reverting to configuration.
 
 ## Reading and changing settings
 
+`GET /api/v1/auth/settings` is public so the frontend can read settings before
+login. `AuthSettingController` maps the current cached settings to
+`AuthSettingResponse` in `data`, wrapped in the shared `ApiResponse<T>` envelope: `success`,
+`message`, `message_fa`, `data`, and a UTC ISO-8601 `timestamp`. Successful reads
+return HTTP 200 with English/Persian messages and omit `code` entirely (it is
+reserved for errors). `data` contains only `loginEnabled`, `registerEnabled`,
+`defaultOtpChannel`, `emailNotificationEnabled`, `smsNotificationEnabled`, and
+`inAppNotificationEnabled`; internal `id`, `version`, and `updatedAt` remain in
+the service DTO and are not exposed to the frontend.
+This endpoint reads settings only; it does not create or update revisions.
+
 The immutable Java record `dto.setting.AuthSettingDto` has a Lombok builder and
 `toBuilder()`. It is used both for cached reads and edits:
 

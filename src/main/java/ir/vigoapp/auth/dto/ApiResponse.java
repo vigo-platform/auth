@@ -12,7 +12,7 @@ public record ApiResponse<T>(
         boolean success,
         @JsonInclude(JsonInclude.Include.NON_NULL) String code,
         String message,
-        @JsonProperty("message_fa") String messageFa,
+        String messageFa,
         T data,
         String timestamp
 ) {

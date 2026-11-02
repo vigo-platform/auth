@@ -80,6 +80,24 @@ Two-factor audit events use the existing structured logging setup. `login_second
 
 Deploy User 3.1.0 support before this Auth version: omitted proto3 booleans default to `false`. Roll out this Auth version across all instances together, since older instances do not enforce the new flag. Existing Redis challenges without `passwordVerified` are treated as having no password proof: two-factor accounts must start a fresh password login; accounts without two-factor authentication can complete their existing OTP challenges. No SQL migration or Redis flush is required. Existing sessions retain their refresh behavior; enabling two-factor authentication controls new logins and does not by itself revoke sessions.
 
+## TODO: expired credentials after authentication
+
+Deferred until the registration and `change_password` workflows are completed:
+
+- Do not use `credentialsExpired` to reject password verification, OTP issuance or
+  OTP delivery. Continue to enforce account status, verified contacts, lockout and 2FA.
+- Check expiry only after a correct password for password-only login, after a
+  correct password and OTP for 2FA, or after a correct OTP for passwordless login.
+- At the final gate before normal session/token creation, require an expired user
+  to choose a new password. A successful password change in User must clear expiry;
+  revalidate the account before completing login. Authentication alone must not
+  clear expiry or grant a normal session while the password change is outstanding.
+
+This is a TODO only. Current expiry rejection, including its effect on OTP delivery,
+remains in place until the continuation is implemented. The code TODOs are in
+`AccountEligibility.canLogin()` and `SessionService.create()`. Refresh continues to
+reject expired credentials.
+
 ## Throttling and cooldown
 
 Redis is required; failure to enforce a policy returns 503. Keys use readable, namespaced email/phone/IP/account values; no cryptographic hash or HMAC is used for Redis keys or values. Lua scripts atomically update each counter and TTL using Redis time. The rate limits, lock escalation, cooldowns and expiry rules are unchanged by the readable-key change. Defaults:

@@ -42,6 +42,13 @@ public class SessionService {
 
     @Transactional
     public TokenResponse create(UserAccount user, ClientInfo client) {
+        // TODO(credentials-expiry): Implement after registration/change_password. This is the final
+        // gate shared by correct password-only login, password + verified 2FA, and verified
+        // passwordless OTP. If credentialsExpired is true, continue to a required new-password step
+        // instead of rejecting login here. Only a successful password change in User should clear
+        // credentialsExpired; then revalidate the account and issue the normal session/tokens.
+        // Do not clear expiry merely because authentication succeeded or issue tokens before the
+        // password change. Coordinate with AccountEligibility to remove its early expiry checks.
         if (!AccountEligibility.canLogin(user)) throw AuthException.invalidCredentials();
         Instant now = clock.instant();
         var session = sessions.save(new AuthSession(user, now, now.plus(properties.getSessionTtl())));

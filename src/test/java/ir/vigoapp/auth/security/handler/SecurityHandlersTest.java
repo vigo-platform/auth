@@ -27,9 +27,11 @@ class SecurityHandlersTest {
         assertThat(response.getContentType()).contains("application/json");
 
         Map<?, ?> body = new ObjectMapper().readValue(response.getContentAsString(), Map.class);
-        assertThat(body.get("status")).isEqualTo(401);
-        assertThat(body.get("error")).isEqualTo("Unauthorized");
-        assertThat(body.get("path")).isEqualTo("/api/v1/protected");
+        assertThat(body.get("success")).isEqualTo(false);
+        assertThat(body.get("code")).isEqualTo("UNAUTHORIZED");
+        assertThat(body.get("messageFa")).isEqualTo("احراز هویت الزامی است.");
+        assertThat(response.getHeader("WWW-Authenticate")).isEqualTo("Bearer");
+        assertThat(response.getContentAsString()).doesNotContain("Bad token");
     }
 
     @Test
@@ -45,8 +47,9 @@ class SecurityHandlersTest {
         assertThat(response.getContentType()).contains("application/json");
 
         Map<?, ?> body = new ObjectMapper().readValue(response.getContentAsString(), Map.class);
-        assertThat(body.get("status")).isEqualTo(403);
-        assertThat(body.get("error")).isEqualTo("Forbidden");
-        assertThat(body.get("path")).isEqualTo("/api/v1/admin");
+        assertThat(body.get("success")).isEqualTo(false);
+        assertThat(body.get("code")).isEqualTo("ACCESS_DENIED");
+        assertThat(body.get("messageFa")).isEqualTo("دسترسی مجاز نیست.");
+        assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
     }
 }

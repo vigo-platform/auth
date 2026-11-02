@@ -38,7 +38,7 @@ class AuthSettingControllerTest {
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.code").doesNotHaveJsonPath())
                 .andExpect(jsonPath("$.message").value("Auth settings retrieved successfully."))
-                .andExpect(jsonPath("$.message_fa").value("تنظیمات احراز هویت با موفقیت دریافت شد."))
+                .andExpect(jsonPath("$.messageFa").value("تنظیمات احراز هویت با موفقیت دریافت شد."))
                 .andExpect(jsonPath("$.timestamp", matchesPattern("\\d{4}-\\d{2}-\\d{2}T.*Z")))
                 .andExpect(jsonPath("$.data", aMapWithSize(6)))
                 .andExpect(jsonPath("$.data.id").doesNotHaveJsonPath())

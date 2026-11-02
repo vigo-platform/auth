@@ -16,7 +16,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
-import java.util.Arrays;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 
 /**
  * <h2>Core Security Configuration</h2>
@@ -47,12 +47,18 @@ public class SecurityConfig {
     private final ApplicationProperties applicationProperties;
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        log.info("Initializing SecurityFilterChain with Stateless Session Policy...");
+    public FilterRegistrationBean<JwtAuthenticationFilter> jwtFilterRegistration() {
+        // Run only inside Spring Security, rather than twice as a servlet filter as well.
+        var registration = new FilterRegistrationBean<>(jwtAuthenticationFilter);
+        registration.setEnabled(false);
+        return registration;
+    }
 
-        // Convert the List of strings into an array for Spring Security varargs
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         String[] publicEndpoints = applicationProperties.getPublicPaths();
-        log.info("Public endpoints: {}", Arrays.toString(publicEndpoints));
+        log.atInfo().addKeyValue("event", "security_chain_initialized").addKeyValue("session_policy", "stateless")
+                .addKeyValue("public_path_count", publicEndpoints.length).log("Security filter chain initialized.");
 
         http
                 .csrf(AbstractHttpConfigurer::disable)

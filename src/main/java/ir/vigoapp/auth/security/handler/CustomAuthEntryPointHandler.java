@@ -1,6 +1,8 @@
 package ir.vigoapp.auth.security.handler;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ir.vigoapp.auth.dto.ApiResponse;
+import ir.vigoapp.auth.service.login.ClientInfo;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -13,9 +15,8 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import org.springframework.http.HttpHeaders;
 
 @Slf4j
 @Component
@@ -34,18 +35,19 @@ public class CustomAuthEntryPointHandler implements AuthenticationEntryPoint {
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException)
             throws IOException, ServletException {
-        log.warn("Unauthorized error at URI: {} - Message: {}", request.getRequestURI(), authException.getMessage());
+        var client = ClientInfo.from(request);
+        log.atWarn().addKeyValue("event", "authentication_required").addKeyValue("result", "REJECTED")
+                .addKeyValue("status", 401).addKeyValue("http_method", request.getMethod())
+                .addKeyValue("path", request.getRequestURI()).addKeyValue("ip_address", client.ipAddress())
+                .addKeyValue("user_agent", client.userAgent()).addKeyValue("device_id", client.deviceId())
+                .log("Request requires authentication.");
 
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("timestamp", Instant.now().toString());
-        body.put("status", HttpStatus.UNAUTHORIZED.value());
-        body.put("error", "Unauthorized");
-        body.put("message", authException.getMessage());
-        body.put("path", request.getRequestURI());
-
-        objectMapper.writeValue(response.getOutputStream(), body);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
+        objectMapper.writeValue(response.getOutputStream(), ApiResponse.failure("UNAUTHORIZED",
+                "Authentication is required.", "احراز هویت الزامی است.", null));
     }
 }

@@ -1,6 +1,8 @@
 package ir.vigoapp.auth.security.handler;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ir.vigoapp.auth.dto.ApiResponse;
+import ir.vigoapp.auth.service.login.ClientInfo;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -13,9 +15,8 @@ import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import org.springframework.http.HttpHeaders;
 
 @Slf4j
 @Component
@@ -34,18 +35,18 @@ public class CustomAccessDeniedHandler implements AccessDeniedHandler {
     @Override
     public void handle(HttpServletRequest request, HttpServletResponse response, AccessDeniedException accessDeniedException)
             throws IOException, ServletException {
-        log.warn("Access denied error at URI: {} - Message: {}", request.getRequestURI(), accessDeniedException.getMessage());
+        var client = ClientInfo.from(request);
+        log.atWarn().addKeyValue("event", "access_denied").addKeyValue("result", "REJECTED")
+                .addKeyValue("status", 403).addKeyValue("http_method", request.getMethod())
+                .addKeyValue("path", request.getRequestURI()).addKeyValue("ip_address", client.ipAddress())
+                .addKeyValue("user_agent", client.userAgent()).addKeyValue("device_id", client.deviceId())
+                .log("Request access denied.");
 
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setStatus(HttpStatus.FORBIDDEN.value());
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("timestamp", Instant.now().toString());
-        body.put("status", HttpStatus.FORBIDDEN.value());
-        body.put("error", "Forbidden");
-        body.put("message", accessDeniedException.getMessage());
-        body.put("path", request.getRequestURI());
-
-        objectMapper.writeValue(response.getOutputStream(), body);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        objectMapper.writeValue(response.getOutputStream(), ApiResponse.failure("ACCESS_DENIED",
+                "Access is denied.", "دسترسی مجاز نیست.", null));
     }
 }

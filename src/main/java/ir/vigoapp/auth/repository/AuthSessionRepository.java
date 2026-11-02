@@ -24,6 +24,14 @@ public interface AuthSessionRepository extends JpaRepository<AuthSession, UUID> 
             + "where s.userId = :userId and (s.revoked = false or s.revokedAt is null)")
     int revokeAllByUserId(@Param("userId") long userId, @Param("now") Instant now, @Param("reason") String reason);
 
+    @Modifying(flushAutomatically = true)
+    @Query("update AuthSession s set s.revoked = true, s.revokedAt = coalesce(s.revokedAt, :now), "
+            + "s.revokedReason = coalesce(s.revokedReason, :reason) "
+            + "where s.userId = :userId and s.credentialVersion < :credentialVersion "
+            + "and (s.revoked = false or s.revokedAt is null)")
+    int revokeOlderCredentialsByUserId(@Param("userId") long userId, @Param("credentialVersion") long credentialVersion,
+                                      @Param("now") Instant now, @Param("reason") String reason);
+
     @Modifying
     @Query("update AuthSession s set s.revoked = true, s.revokedAt = coalesce(s.revokedAt, :now), "
             + "s.revokedReason = coalesce(s.revokedReason, 'EXPIRED_CLEANUP') "

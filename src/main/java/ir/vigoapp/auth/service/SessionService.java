@@ -118,13 +118,21 @@ public class SessionService {
         if (user.userId() != session.getUserId()) {
             throw new UserClientException(UserClientException.Code.INVALID_RESPONSE, "GetUserById");
         }
-        if (!AccountEligibility.canLogin(user) || user.credentialVersion() != session.getCredentialVersion()) {
-            sessions.revokeAllByUserId(user.userId(), now, "USER_STATE_CHANGED");
-            refreshTokens.revokeAllByUserId(user.userId(), now);
+        boolean accountIneligible = !AccountEligibility.canLogin(user);
+        if (accountIneligible || user.credentialVersion() != session.getCredentialVersion()) {
+            if (accountIneligible) {
+                sessions.revokeAllByUserId(user.userId(), now, "USER_STATE_CHANGED");
+                refreshTokens.revokeAllByUserId(user.userId(), now);
+            } else {
+                // Preserve current credentials and any newer login committed after the User snapshot.
+                sessions.revokeOlderCredentialsByUserId(user.userId(), user.credentialVersion(), now, "USER_STATE_CHANGED");
+                refreshTokens.revokeOlderCredentialsByUserId(user.userId(), user.credentialVersion(), now);
+            }
             log.atWarn().addKeyValue("event", "refresh_rejected").addKeyValue("result", "REJECTED")
                     .addKeyValue("user_id", user.userId()).addKeyValue("session_id", sessionId)
-                    .addKeyValue("reason", "user_state_changed").addKeyValue("ip_address", client.ipAddress())
-                    .log("Account state changed; all user sessions require revocation.");
+                    .addKeyValue("reason", accountIneligible ? "user_state_changed" : "credential_version_changed")
+                    .addKeyValue("ip_address", client.ipAddress())
+                    .log("Account state or credentials changed; affected user sessions require revocation.");
             throw AuthException.invalidRefreshToken();
         }
 

@@ -875,13 +875,87 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void credentialChangeRevokesEverySessionOnRefresh() throws Exception {
+    void credentialChangeRevokesAllOutdatedSessionsOnRefresh() throws Exception {
         var first = createSession();
         createSession();
         doReturn(account(UserAccount.AccountStatus.ACTIVE, 4, false, true)).when(users).getUserById(42);
         assertThat(call("/refresh", Map.of("refreshToken", first.refreshToken())).getResponse().getStatus()).isEqualTo(401);
         assertThat(sessionRepository.findAll()).allSatisfy(session -> assertThat(session.getRevokedReason()).isEqualTo("USER_STATE_CHANGED"));
         assertAllFamiliesRevoked();
+    }
+
+    @Test
+    void oldCredentialRefreshPreservesNewSessionsAndOtherUsers() throws Exception {
+        var oldest = sessions.create(account(UserAccount.AccountStatus.ACTIVE, 2, false, true), CLIENT);
+        var old = createSession();
+        var rotatedOld = sessions.refresh(old.refreshToken(), CLIENT);
+        var currentUser = account(UserAccount.AccountStatus.ACTIVE, 4, false, true);
+        setUser(currentUser);
+        var current = sessions.create(currentUser, CLIENT);
+        var otherUser = user.toBuilder().userId(43).build();
+        doReturn(otherUser).when(users).getUserById(43);
+        var other = sessions.create(otherUser, CLIENT);
+
+        assertThat(call("/refresh", Map.of("refreshToken", rotatedOld.refreshToken()))
+                .getResponse().getStatus()).isEqualTo(401);
+
+        assertThat(sessionRepository.findAll())
+                .filteredOn(session -> session.getUserId() == 42 && session.getCredentialVersion() < 4)
+                .hasSize(2).allSatisfy(session -> {
+                    assertThat(session.isRevoked()).isTrue();
+                    assertThat(session.getRevokedReason()).isEqualTo("USER_STATE_CHANGED");
+                });
+        for (var pair : List.of(oldest, old, rotatedOld)) {
+            var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
+            assertThat(token.isActive()).isFalse();
+            assertThat(token.getRevokedAt()).isNotNull();
+            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isFalse();
+        }
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(old.refreshToken())).orElseThrow()
+                .getConsumedAt()).isNotNull();
+        for (var pair : List.of(current, other)) {
+            var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
+            assertThat(token.isActive()).isTrue();
+            assertThat(token.getRevokedAt()).isNull();
+            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isTrue();
+            assertThat(call("/refresh", Map.of("refreshToken", pair.refreshToken()))
+                    .getResponse().getStatus()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void oldCredentialRefreshPreservesSessionsNewerThanTheUserSnapshot() throws Exception {
+        var old = createSession();
+        var snapshot = account(UserAccount.AccountStatus.ACTIVE, 4, false, true);
+        setUser(snapshot);
+        var current = sessions.create(snapshot, CLIENT);
+        var newer = sessions.create(snapshot.toBuilder().credentialVersion(5).build(), CLIENT);
+
+        assertThat(call("/refresh", Map.of("refreshToken", old.refreshToken()))
+                .getResponse().getStatus()).isEqualTo(401);
+
+        // A newer password change/login may commit after the User lookup took its snapshot.
+        for (var pair : List.of(current, newer)) {
+            var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
+            assertThat(token.isActive()).isTrue();
+            assertThat(token.getRevokedAt()).isNull();
+            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isTrue();
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"SUSPENDED, false", "ACTIVE, true"})
+    void ineligibleAccountStillRevokesAllCredentialVersions(UserAccount.AccountStatus status, boolean expired)
+            throws Exception {
+        var old = createSession();
+        var current = sessions.create(account(UserAccount.AccountStatus.ACTIVE, 4, false, true), CLIENT);
+        setUser(account(status, 4, expired, true));
+
+        assertThat(call("/refresh", Map.of("refreshToken", old.refreshToken()))
+                .getResponse().getStatus()).isEqualTo(401);
+
+        assertAllFamiliesRevoked();
+        assertThat(sessions.isAccessSessionActive(decoder.decode(current.accessToken()))).isFalse();
     }
 
     @Test

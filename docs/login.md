@@ -53,6 +53,13 @@ OTP initiation returns `data.step = "OTP_REQUIRED"` and `data.challenge = {"mfaT
 
 The User service remains the owner of users, bcrypt hashes, roles, status, verified contacts and credential versions. Auth uses the existing `UserGrpcClient`; no user table or raw SQL data access is added. `UNKNOWN`, pending, suspended, deactivated and credential-expired accounts cannot log in. OTP delivery requires the selected verified email/phone. OTP verification and refresh re-fetch the account and check eligibility and `credentialVersion` before issuing tokens. Verification also checks the challenge's stored delivery destination, so changing an email/phone invalidates previously sent codes. Returned user IDs/lookup identifiers must match the requested identity. User service timeouts/unavailability return 503 without consuming the OTP or refresh token.
 
+When refresh detects a credential-version mismatch for an otherwise eligible account,
+it rejects the request and revokes only sessions and refresh tokens with credential
+versions older than the User snapshot. Sessions using the current or a newer version
+remain valid, so an old device cannot log out a session created after a password
+change. An ineligible account still causes all of that user's sessions and refresh
+tokens to be revoked, regardless of credential version.
+
 `AuthPolicyService` enforces `loginEnabled` for password login, OTP initiation and
 verification. Each channel's `*NotificationEnabled` switch gates both creation and
 verification of its authentication challenges. A disabled channel returns 503

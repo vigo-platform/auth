@@ -34,6 +34,14 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
             + "and t.session.id in (select s.id from AuthSession s where s.userId = :userId)")
     int revokeAllByUserId(@Param("userId") long userId, @Param("now") Instant now);
 
+    @Modifying(flushAutomatically = true)
+    @Query("update RefreshToken t set t.active = false, t.revokedAt = coalesce(t.revokedAt, :now) "
+            + "where (t.active = true or t.revokedAt is null) "
+            + "and t.session.id in (select s.id from AuthSession s "
+            + "where s.userId = :userId and s.credentialVersion < :credentialVersion)")
+    int revokeOlderCredentialsByUserId(@Param("userId") long userId, @Param("credentialVersion") long credentialVersion,
+                                      @Param("now") Instant now);
+
     // Synchronize stored state even when an expired token is never presented again.
     // Consumption/expiry are not revocations: preserve the audit timestamps as they are.
     @Modifying(flushAutomatically = true)

@@ -6,3 +6,12 @@ variables:
   - name: userGrpcUrl
     value: http://127.0.0.1:50051
     description: ""
+  - name: accessToken
+    value: ""
+    description: "Copy from login data.tokens.accessToken or refresh data.accessToken"
+  - name: refreshToken
+    value: ""
+    description: "Replace after every login/refresh; consumed tokens revoke the session on reuse"
+  - name: mfaToken
+    value: ""
+    description: "Copy from data.challenge.mfaToken"

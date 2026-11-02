@@ -1,0 +1,12 @@
+info:
+  name: Verify Login OTP
+  type: http
+  seq: 7
+http:
+  method: POST
+  url: "{{baseUrl}}/api/v1/auth/verify"
+  auth: none
+  body:
+    type: json
+    data: |-
+      {"mfaToken":"{{mfaToken}}","otp":"012345"}

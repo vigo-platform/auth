@@ -1,0 +1,12 @@
+info:
+  name: Login OTP Phone
+  type: http
+  seq: 6
+http:
+  method: POST
+  url: "{{baseUrl}}/api/v1/auth/login-otp-phone"
+  auth: none
+  body:
+    type: json
+    data: |-
+      {"phone":"09123456789"}

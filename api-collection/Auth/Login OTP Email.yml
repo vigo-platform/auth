@@ -1,0 +1,12 @@
+info:
+  name: Login OTP Email
+  type: http
+  seq: 5
+http:
+  method: POST
+  url: "{{baseUrl}}/api/v1/auth/login-otp-email"
+  auth: none
+  body:
+    type: json
+    data: |-
+      {"email":"user@example.com"}

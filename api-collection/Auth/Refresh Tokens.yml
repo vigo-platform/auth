@@ -1,0 +1,12 @@
+info:
+  name: Refresh Tokens
+  type: http
+  seq: 8
+http:
+  method: POST
+  url: "{{baseUrl}}/api/v1/auth/refresh"
+  auth: none
+  body:
+    type: json
+    data: |-
+      {"refreshToken":"{{refreshToken}}"}

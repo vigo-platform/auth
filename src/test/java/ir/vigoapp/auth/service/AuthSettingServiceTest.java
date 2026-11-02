@@ -33,6 +33,7 @@ import java.util.Optional;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -110,7 +111,7 @@ class AuthSettingServiceTest {
         });
         doAnswer(invocation -> {
             assertThatThrownBy(service::getCurrent).isInstanceOf(IllegalStateException.class);
-            assertThat(events("Auth settings created from defaults:")).isEmpty();
+            assertThat(events("created from defaults")).isEmpty();
             return null;
         }).when(connection).commit();
 
@@ -118,8 +119,9 @@ class AuthSettingServiceTest {
 
         assertThat(service.getCurrent().id()).isEqualTo(1);
         assertThat(service.getCurrent().updatedAt()).isEqualTo(Instant.parse("2026-11-01T12:00:00Z"));
-        assertThat(events("Auth settings created from defaults:")).hasSize(1);
-        assertThat(events("Auth settings created from defaults:").getFirst().getFormattedMessage()).contains("version=1");
+        assertThat(events("created from defaults")).hasSize(1);
+        assertThat(events("created from defaults").getFirst().getKeyValuePairs())
+                .extracting(pair -> pair.key, pair -> pair.value).contains(tuple("version", 1L));
         var order = inOrder(repository);
         order.verify(repository).lockForRevisionChange();
         order.verify(repository).findFirstByOrderByVersionDescIdDesc();
@@ -135,8 +137,9 @@ class AuthSettingServiceTest {
 
         var snapshot = service.initialize();
         assertThat(snapshot.loginEnabled()).isFalse();
-        assertThat(events("Auth settings loaded:")).hasSize(1);
-        assertThat(events("Auth settings loaded:").getFirst().getFormattedMessage()).contains("version=4");
+        assertThat(events("loaded")).hasSize(1);
+        assertThat(events("loaded").getFirst().getKeyValuePairs())
+                .extracting(pair -> pair.key, pair -> pair.value).contains(tuple("version", 4L));
         verify(repository, never()).saveAndFlush(any());
         clearInvocations(repository);
         assertThat(service.getCurrent()).isSameAs(snapshot);
@@ -150,7 +153,7 @@ class AuthSettingServiceTest {
         doAnswer(invocation -> {
             assertThat(service.getCurrent().version()).isZero();
             assertThat(service.getCurrent().loginEnabled()).isTrue();
-            assertThat(events("Auth settings updated:")).isEmpty();
+            assertThat(events("updated")).isEmpty();
             return null;
         }).when(connection).commit();
 
@@ -170,8 +173,9 @@ class AuthSettingServiceTest {
         assertThat(result.emailNotificationEnabled()).isTrue();
         assertThat(result.smsNotificationEnabled()).isFalse();
         assertThat(result.inAppNotificationEnabled()).isTrue();
-        assertThat(events("Auth settings updated:")).hasSize(1);
-        assertThat(events("Auth settings updated:").getFirst().getFormattedMessage()).contains("version=1");
+        assertThat(events("updated")).hasSize(1);
+        assertThat(events("updated").getFirst().getKeyValuePairs())
+                .extracting(pair -> pair.key, pair -> pair.value).contains(tuple("version", 1L));
     }
 
     @Test
@@ -239,7 +243,7 @@ class AuthSettingServiceTest {
         assertThatThrownBy(() -> service.update(command(0))).isInstanceOf(TransactionSystemException.class);
 
         assertThat(service.getCurrent()).isSameAs(previous);
-        assertThat(events("Auth settings updated:")).isEmpty();
+        assertThat(events("updated")).isEmpty();
     }
 
     @Test
@@ -255,7 +259,7 @@ class AuthSettingServiceTest {
 
         assertThat(service.getCurrent()).isSameAs(previous);
         verify(connection).rollback();
-        assertThat(events("Auth settings updated:")).isEmpty();
+        assertThat(events("updated")).isEmpty();
     }
 
     @Test
@@ -268,8 +272,9 @@ class AuthSettingServiceTest {
         when(repository.findFirstByOrderByVersionDescIdDesc()).thenReturn(Optional.of(setting(2)));
         service.reload();
         assertThat(service.getCurrent().version()).isEqualTo(3);
-        assertThat(events("Auth settings reloaded:")).hasSize(1);
-        assertThat(events("Auth settings reloaded:").getFirst().getFormattedMessage()).contains("version=3");
+        assertThat(events("reloaded")).hasSize(1);
+        assertThat(events("reloaded").getFirst().getKeyValuePairs())
+                .extracting(pair -> pair.key, pair -> pair.value).contains(tuple("version", 3L));
     }
 
     @Test
@@ -311,8 +316,9 @@ class AuthSettingServiceTest {
         verify(repository, never()).saveAndFlush(any());
     }
 
-    private List<ILoggingEvent> events(String prefix) {
-        return logs.list.stream().filter(event -> event.getFormattedMessage().startsWith(prefix)).toList();
+    private List<ILoggingEvent> events(String action) {
+        return logs.list.stream().filter(event -> event.getKeyValuePairs() != null && event.getKeyValuePairs().stream()
+                .anyMatch(pair -> pair.key.equals("action") && pair.value.equals(action))).toList();
     }
 
     private AuthSetting initializeExisting() {

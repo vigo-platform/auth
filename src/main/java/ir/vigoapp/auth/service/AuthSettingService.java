@@ -111,11 +111,12 @@ public class AuthSettingService {
                 var active = cached.updateAndGet(current -> current == null || snapshot.version() >= current.version()
                         ? snapshot : current);
                 if (active == snapshot) {
-                    log.info("Auth settings {}: id={}, version={}", action, snapshot.id(), snapshot.version());
+                    log.atInfo().addKeyValue("event", "auth_settings_changed").addKeyValue("action", action)
+                            .addKeyValue("settings_id", snapshot.id()).addKeyValue("version", snapshot.version())
+                            .log("Auth settings snapshot activated.");
                 }
             }
         });
         return snapshot;
     }
-
 }

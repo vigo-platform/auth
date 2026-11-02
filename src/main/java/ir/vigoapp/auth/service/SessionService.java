@@ -45,8 +45,8 @@ public class SessionService {
     public TokenResponse create(UserAccount user, ClientInfo client) {
         if (!AccountEligibility.canLogin(user)) throw AuthException.invalidCredentials();
         Instant now = clock.instant();
-        var session = sessions.save(new AuthSession(user, now, now.plus(properties.getSessionTtl()), client));
-        var response = issuePair(user, session, now);
+        var session = sessions.save(new AuthSession(user, now, now.plus(properties.getSessionTtl())));
+        var response = issuePair(user, session, now, client);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -128,8 +128,7 @@ public class SessionService {
             throw AuthException.invalidRefreshToken();
         }
         token.consume(now);
-        session.updateClient(client);
-        var response = issuePair(user, session, now);
+        var response = issuePair(user, session, now, client);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -194,11 +193,11 @@ public class SessionService {
         refreshTokens.revokeAllBySessionId(session.getId(), now);
     }
 
-    private TokenResponse issuePair(UserAccount user, AuthSession session, Instant now) {
+    private TokenResponse issuePair(UserAccount user, AuthSession session, Instant now, ClientInfo client) {
         String refreshToken = tokens.randomToken();
         Instant refreshExpires = now.plus(properties.getRefreshTokenTtl());
         if (refreshExpires.isAfter(session.getExpiresAt())) refreshExpires = session.getExpiresAt();
-        refreshTokens.save(new RefreshToken(session, tokens.hash(refreshToken), now, refreshExpires));
+        refreshTokens.save(new RefreshToken(session, tokens.hash(refreshToken), now, refreshExpires, client));
         var accessToken = accessTokens.issue(user, session, now);
         return new TokenResponse("Bearer", accessToken.getTokenValue(), Duration.between(now, accessToken.getExpiresAt()).toSeconds(),
                 refreshToken, Duration.between(now, refreshExpires).toSeconds());

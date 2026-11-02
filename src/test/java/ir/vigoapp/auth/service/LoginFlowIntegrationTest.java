@@ -280,6 +280,69 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
+    void eachRefreshTokenKeepsItsIssuingClientInfoAcrossRotations() {
+        var first = createSession();
+        var session = sessionRepository.findAll().getFirst();
+        var nextClient = new ClientInfo("203.0.113.10", "next-browser", "next-device");
+        var next = sessions.refresh(first.refreshToken(), nextClient);
+        var lastClient = new ClientInfo("2001:db8::1", null, null);
+        var last = sessions.refresh(next.refreshToken(), lastClient);
+
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(first.refreshToken())).orElseThrow())
+                .satisfies(token -> {
+                    assertThat(token.getIpAddress()).isEqualTo(CLIENT.ipAddress());
+                    assertThat(token.getUserAgent()).isEqualTo(CLIENT.userAgent());
+                    assertThat(token.getDeviceId()).isEqualTo(CLIENT.deviceId());
+                    assertThat(token.getConsumedAt()).isNotNull();
+                });
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(next.refreshToken())).orElseThrow())
+                .satisfies(token -> {
+                    assertThat(token.getIpAddress()).isEqualTo(nextClient.ipAddress());
+                    assertThat(token.getUserAgent()).isEqualTo(nextClient.userAgent());
+                    assertThat(token.getDeviceId()).isEqualTo(nextClient.deviceId());
+                    assertThat(token.getConsumedAt()).isNotNull();
+                });
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(last.refreshToken())).orElseThrow())
+                .satisfies(token -> {
+                    assertThat(token.getIpAddress()).isEqualTo(lastClient.ipAddress());
+                    assertThat(token.getUserAgent()).isNull();
+                    assertThat(token.getDeviceId()).isNull();
+                    assertThat(token.getConsumedAt()).isNull();
+                });
+        assertThat(refreshRepository.findAll()).hasSize(3)
+                .allSatisfy(token -> assertThat(token.getSession().getId()).isEqualTo(session.getId()));
+        assertThat(sessionRepository.findAll()).singleElement()
+                .usingRecursiveComparison().isEqualTo(session);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void passwordAndOtpLoginStoreTheIssuingRequestMetadataOnTheRefreshToken(boolean otp) throws Exception {
+        String path;
+        Map<String, String> body;
+        if (otp) {
+            var challenge = startOtp();
+            path = "/verify";
+            body = Map.of("mfaToken", challenge.token(), "otp", challenge.code());
+        } else {
+            path = "/login-password";
+            body = Map.of("identifier", "user@example.com", "password", "correct-password");
+        }
+        mvc.perform(post("/api/v1/auth" + path).with(request -> {
+                    request.setRemoteAddr("203.0.113.20");
+                    return request;
+                }).header("User-Agent", "issuing-browser").header("X-Device-Id", "issuing-device")
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.step").value("SUCCESS"));
+
+        assertThat(refreshRepository.findAll()).singleElement().satisfies(token -> {
+            assertThat(token.getIpAddress()).isEqualTo("203.0.113.20");
+            assertThat(token.getUserAgent()).isEqualTo("issuing-browser");
+            assertThat(token.getDeviceId()).isEqualTo("issuing-device");
+        });
+    }
+
+    @Test
     void rotationConsumesOldTokenAndReuseCommitsFamilyRevocation() throws Exception {
         var pair = createSession();
         var rotated = call("/refresh", Map.of("refreshToken", pair.refreshToken()));

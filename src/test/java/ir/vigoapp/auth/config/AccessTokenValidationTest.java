@@ -7,7 +7,6 @@ import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.entity.AuthSession;
 import ir.vigoapp.auth.security.jwt.AccessTokenService;
 import ir.vigoapp.auth.security.jwt.JwtConfig;
-import ir.vigoapp.auth.service.login.ClientInfo;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
@@ -46,7 +45,7 @@ class AccessTokenValidationTest {
         var now = Instant.now();
         var user = new UserAccount(42, List.of("USER", "ADMIN"), "user@example.com", null,
                 UserAccount.AccountStatus.ACTIVE, true, false, 3, false);
-        var session = new AuthSession(user, now, now.plusSeconds(86400), new ClientInfo("127.0.0.1", null, null));
+        var session = new AuthSession(user, now, now.plusSeconds(86400));
         ReflectionTestUtils.setField(session, "id", UUID.randomUUID());
         var issued = new AccessTokenService(encoder, properties).issue(user, session, now);
         var jwt = decoder.decode(issued.getTokenValue());

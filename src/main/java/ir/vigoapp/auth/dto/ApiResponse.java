@@ -25,4 +25,8 @@ public record ApiResponse<T>(
                 .timestamp(Instant.now().toString())
                 .build();
     }
+
+    public static <T> ApiResponse<T> failure(String code, String message, String messageFa, T data) {
+        return new ApiResponse<>(false, code, message, messageFa, data, Instant.now().toString());
+    }
 }

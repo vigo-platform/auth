@@ -16,6 +16,16 @@ spring:
       hibernate:
         format_sql: true
 
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      repositories:
+        enabled: false
+
   flyway:
     enabled: true
     baseline-on-migrate: true
@@ -23,6 +33,12 @@ spring:
 app:
   public-paths:
     - "/api/v1/auth/settings"
+    - "/api/v1/auth/login-password"
+    - "/api/v1/auth/login-otp-email"
+    - "/api/v1/auth/login-otp-phone"
+    - "/api/v1/auth/verify"
+    - "/api/v1/auth/refresh"
+    - "/api/v1/auth/logout"
     - "/.well-known/jwks.json"
     - "/actuator/**"
     - "/error"
@@ -45,6 +61,26 @@ jwt:
   key-id: ${JWT_KEY_ID:vigo-auth-key-1}
   private-key-path: ${JWT_PRIVATE_KEY_PATH:.keys/private_key.pem}
   public-key-path: ${JWT_PUBLIC_KEY_PATH:.keys/public_key.pem}
+  issuer: ${JWT_ISSUER:https://auth.vigoapp.ir}
+  audience: ${JWT_AUDIENCE:vigo-api}
+  access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
+
+auth:
+  otp-secret: ${AUTH_OTP_SECRET}
+  password-otp-required: ${AUTH_PASSWORD_OTP_REQUIRED:false}
+  otp-ttl: ${AUTH_OTP_TTL:5m}
+  otp-cooldown: ${AUTH_OTP_COOLDOWN:1m}
+  otp-max-attempts: ${AUTH_OTP_MAX_ATTEMPTS:3}
+  max-failed-attempts: ${AUTH_MAX_FAILED_ATTEMPTS:5}
+  failure-window: ${AUTH_FAILURE_WINDOW:30m}
+  lock-duration: ${AUTH_LOCK_DURATION:1m}
+  max-lock-duration: ${AUTH_MAX_LOCK_DURATION:30m}
+  ip-max-requests: ${AUTH_IP_MAX_REQUESTS:60}
+  ip-window: ${AUTH_IP_WINDOW:1m}
+  refresh-token-ttl: ${AUTH_REFRESH_TOKEN_TTL:7d}
+  session-ttl: ${AUTH_SESSION_TTL:30d}
+  retention: ${AUTH_RETENTION:7d}
+  cleanup-interval: ${AUTH_CLEANUP_INTERVAL:1h}
 
 management:
   endpoints:

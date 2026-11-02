@@ -94,10 +94,11 @@ public class LoginService {
             OtpChannel channel = settings.getCurrent().defaultOtpChannel();
             if (!AccountEligibility.canReceiveOtp(user, channel)) throw AuthException.invalidCredentials();
             protection.reserveIdentifierCooldown(identifierKey);
-            if (!protection.reserveAccountCooldown(user.userId())) {
+            long remainingMs = protection.reserveAccountCooldown(user.userId());
+            if (remainingMs > 0) {
                 throw new AuthException(HttpStatus.TOO_MANY_REQUESTS, "OTP_COOLDOWN",
                         "Please wait before requesting another verification code.",
-                        "برای درخواست کد تأیید جدید کمی صبر کنید.", properties.getOtpCooldown().toSeconds());
+                        "برای درخواست کد تأیید جدید کمی صبر کنید.", Math.max(1, (remainingMs + 999) / 1000));
             }
             return issueChallenge(user, identifierKey, channel, client);
         }
@@ -118,7 +119,7 @@ public class LoginService {
         if (info == null) skipReason = "account_not_found";
         else if (!AccountEligibility.canReceiveOtp(info.user(), channel)) skipReason = "account_ineligible";
         else if (protection.isLocked(identifierKey) || protection.isLocked(protection.accountKey(info.user().userId()))) skipReason = "account_locked";
-        else if (!protection.reserveAccountCooldown(info.user().userId())) skipReason = "account_cooldown";
+        else if (protection.reserveAccountCooldown(info.user().userId()) > 0) skipReason = "account_cooldown";
         if (skipReason != null) {
             log.atInfo().addKeyValue("event", "otp_request_accepted").addKeyValue("delivery", "skipped")
                     .addKeyValue("subject", protection.auditSubject(identifierKey)).addKeyValue("channel", channel).addKeyValue("reason", skipReason)

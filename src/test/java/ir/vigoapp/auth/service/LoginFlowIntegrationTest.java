@@ -27,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
@@ -272,6 +273,39 @@ class LoginFlowIntegrationTest {
         var second = startOtp();
         assertThat(verifyOtp(first.token(), first.code()).getResponse().getStatus()).isEqualTo(401);
         assertThat(verifyOtp(second.token(), second.code()).getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void accountCooldownReportsRemainingTimeInsteadOfTheFullConfiguredDuration() throws Exception {
+        properties.setPasswordOtpRequired(true);
+        assertThat(password("09123456789", "correct-password").getResponse().getStatus()).isEqualTo(200);
+        String key = "auth:otp-cooldown:account:42";
+        redis.expire(key, Duration.ofMillis(5500));
+        long beforeMs = redis.getExpire(key, TimeUnit.MILLISECONDS);
+
+        var result = password("user@example.com", "correct-password");
+        long afterMs = redis.getExpire(key, TimeUnit.MILLISECONDS);
+        assertThat(result.getResponse().getStatus()).isEqualTo(429);
+        assertThat(tree(result).path("code").asText()).isEqualTo("OTP_COOLDOWN");
+        long retryAfter = Long.parseLong(result.getResponse().getHeader("Retry-After"));
+        assertThat(retryAfter).isBetween(Math.max(1, (afterMs + 999) / 1000), (beforeMs + 999) / 1000);
+        assertThat(tree(result).at("/data/retryAfterSeconds").asLong()).isEqualTo(retryAfter);
+        assertThat(afterMs).isPositive().isLessThanOrEqualTo(beforeMs);
+        verify(notifications, times(1)).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), anyString(), anyString());
+        assertThat(redis.keys("auth:otp:{login}:challenge:*")).hasSize(1);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"1, 1", "999, 1", "1000, 1", "1001, 2", "1500, 2", "5000, 5"})
+    void accountCooldownRetryAfterRoundsRemainingMillisecondsUp(long remainingMs, long seconds) throws Exception {
+        properties.setPasswordOtpRequired(true);
+        doReturn(remainingMs).when(protection).reserveAccountCooldown(42L);
+
+        var result = password("user@example.com", "correct-password");
+        assertThat(result.getResponse().getStatus()).isEqualTo(429);
+        assertThat(result.getResponse().getHeader("Retry-After")).isEqualTo(Long.toString(seconds));
+        assertThat(tree(result).at("/data/retryAfterSeconds").asLong()).isEqualTo(seconds);
+        verifyNoInteractions(notifications);
     }
 
     @Test

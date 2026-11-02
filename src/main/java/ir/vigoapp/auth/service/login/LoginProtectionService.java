@@ -80,8 +80,8 @@ public class LoginProtectionService {
         if (remaining > 0) throw limited("OTP_COOLDOWN", remaining);
     }
 
-    public boolean reserveAccountCooldown(long userId) {
-        return reserveCooldown(accountKey(userId)) == 0;
+    public long reserveAccountCooldown(long userId) {
+        return reserveCooldown(accountKey(userId));
     }
 
     private long reserveCooldown(String key) {

@@ -33,6 +33,7 @@ class AuthSettingControllerTest {
 
         mvc.perform(get("/api/v1/auth/settings").accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$", aMapWithSize(5)))
                 .andExpect(jsonPath("$.success").value(true))

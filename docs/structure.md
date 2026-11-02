@@ -15,7 +15,7 @@ This service uses a small layered package structure under `ir.vigoapp.auth`:
 | `repository` | Persistence access, including the Redis-backed `OtpChallengeRepository`. |
 | `scheduling` | Scheduled auth state cleanup. |
 | `security` | Token generation, JWT handling, security handlers and login policies in `security.login`. |
-| `service` | Login, session, settings, login protection and notification workflows. |
+| `service` | Login, registration, session, settings, runtime auth policy, login protection and notification workflows. |
 
 Keep service packages for workflows; place request data in DTOs, stored internal
 state in models, and storage operations in repositories. The User client's models

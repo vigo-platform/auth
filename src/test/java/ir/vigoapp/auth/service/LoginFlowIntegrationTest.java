@@ -9,6 +9,7 @@ import ir.vigoapp.auth.client.user.UserGrpcClient;
 import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.client.user.model.UserLoginInfo;
+import ir.vigoapp.auth.client.user.model.CreateUserCommand;
 import ir.vigoapp.auth.config.AuthProperties;
 import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.login.VerifyLoginRequest;
@@ -41,6 +42,7 @@ import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -97,6 +99,7 @@ class LoginFlowIntegrationTest {
     @Autowired NotificationService notifications;
     @Autowired Clock clock;
     @Autowired LoginProtectionService protection;
+    @Autowired PasswordEncoder passwords;
     private final AtomicReference<Instant> now = new AtomicReference<>();
     private UserAccount user;
     private final Logger auditLogger = (Logger) LoggerFactory.getLogger("ir.vigoapp.auth");
@@ -127,7 +130,7 @@ class LoginFlowIntegrationTest {
         properties.setOtpTtl(Duration.ofMinutes(5));
         properties.setRefreshTokenTtl(Duration.ofDays(7));
         properties.setSessionTtl(Duration.ofDays(30));
-        when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().loginEnabled(true).defaultOtpChannel(OtpChannel.EMAIL).build());
+        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL));
         user = account(UserAccount.AccountStatus.ACTIVE, 3, false, true);
         doThrow(new UserClientException(UserClientException.Code.NOT_FOUND, "GetUserLoginInfoByEmail"))
                 .when(users).getLoginInfoByEmail(anyString());
@@ -153,6 +156,238 @@ class LoginFlowIntegrationTest {
         assertThat(refreshRepository.findAll()).singleElement().satisfies(token ->
                 assertThat(token.getTokenHash()).isEqualTo(tokens.hash(pair.path("refreshToken").asText())));
         verifyNoInteractions(notifications);
+    }
+
+    @Test
+    void disablingLoginBlocksEveryNewLoginPathBeforeAnyExternalWork() throws Exception {
+        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder().loginEnabled(false).build());
+        for (var request : Map.of(
+                "/login-password", Map.of("identifier", "user@example.com", "password", "correct-password"),
+                "/login-otp-email", Map.of("email", "user@example.com"),
+                "/login-otp-phone", Map.of("phone", "09123456789"),
+                "/verify", Map.of("mfaToken", tokens.randomToken(), "otp", "123456")).entrySet()) {
+            var response = call(request.getKey(), request.getValue());
+            assertThat(response.getResponse().getStatus()).isEqualTo(503);
+            assertThat(tree(response).path("code").asText()).isEqualTo("LOGIN_DISABLED");
+        }
+        verifyNoInteractions(users, notifications, protection);
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"/login-otp-email,email,user@example.com,EMAIL", "/login-otp-email,email,missing@example.com,EMAIL",
+            "/login-otp-phone,phone,09123456789,SMS", "/login-otp-phone,phone,09111111111,SMS"})
+    void disabledExplicitChannelRejectsKnownAndUnknownAccountsBeforeCooldownOrLookup(
+            String path, String fieldName, String identifier, OtpChannel channel) throws Exception {
+        when(settings.getCurrent()).thenReturn(disableChannel(enabledSettings(OtpChannel.EMAIL), channel));
+        var response = call(path, Map.of(fieldName, identifier));
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(response).path("code").asText()).isEqualTo("OTP_CHANNEL_DISABLED");
+        verifyNoInteractions(users, notifications, protection);
+        assertThat(redis.keys("auth:*")).isEmpty();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"EMAIL,true", "SMS,true", "IN_APP,true", "EMAIL,false", "SMS,false", "IN_APP,false"})
+    void disabledDefaultNeverBypassesAccountOrGlobalSecondFactor(OtpChannel channel, boolean enrolled) throws Exception {
+        if (enrolled) setUser(twoFactorAccount());
+        else properties.setPasswordOtpRequired(true);
+        when(settings.getCurrent()).thenReturn(disableChannel(enabledSettings(channel), channel));
+        var response = password("user@example.com", "correct-password");
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(response).path("code").asText()).isEqualTo("OTP_CHANNEL_DISABLED");
+        verifyNoInteractions(notifications);
+        assertThat(redis.keys("auth:otp:{login}:challenge:*")).isEmpty();
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @ParameterizedTest
+    @EnumSource(OtpChannel.class)
+    void disablingAnIssuedChallengesChannelBlocksVerificationWithoutUsingAnAttempt(OtpChannel channel) throws Exception {
+        setUser(twoFactorAccount());
+        var active = enabledSettings(channel);
+        when(settings.getCurrent()).thenReturn(active);
+        var started = tree(password("user@example.com", "correct-password"));
+        String token = started.at("/data/challenge/mfaToken").asText();
+        var challenge = challenges.find(token).orElseThrow();
+        when(settings.getCurrent()).thenReturn(disableChannel(active, channel));
+        var response = verifyOtp(token, challenge.code());
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(response).path("code").asText()).isEqualTo("OTP_CHANNEL_DISABLED");
+        assertThat(challenges.find(token).orElseThrow()).satisfies(stored -> {
+            assertThat(stored.state()).isEqualTo("OPEN");
+            assertThat(stored.failedAttempts()).isZero();
+        });
+        verify(users, never()).getUserById(anyLong());
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @Test
+    void changingDefaultDoesNotInvalidateAnEnabledIssuedChannelOrOverrideExplicitEndpoints() throws Exception {
+        var challenge = startOtp();
+        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.SMS));
+        assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(200);
+        clearCooldown();
+        var next = tree(call("/login-otp-email", Map.of("email", "user@example.com")));
+        assertThat(next.at("/data/challenge/channel").asText()).isEqualTo("EMAIL");
+    }
+
+    @Test
+    void allChannelsCanBeDisabledWhilePasswordOnlyLoginRemainsAvailable() throws Exception {
+        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder()
+                .emailNotificationEnabled(false).smsNotificationEnabled(false).inAppNotificationEnabled(false).build());
+        assertThat(password("user@example.com", "correct-password").getResponse().getStatus()).isEqualTo(200);
+        assertThat(sessionRepository.count()).isEqualTo(1);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test
+    void disablingLoginDuringPasswordLookupCannotIssueTokens() throws Exception {
+        doAnswer(invocation -> {
+            when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder().loginEnabled(false).build());
+            return new UserLoginInfo(user, PASSWORD_HASH);
+        }).when(users).getLoginInfoByEmail("user@example.com");
+        assertThat(tree(password("user@example.com", "correct-password")).path("code").asText()).isEqualTo("LOGIN_DISABLED");
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @Test
+    void disablingChannelDuringOtpLookupCannotCreateOrSendAChallenge() throws Exception {
+        doAnswer(invocation -> {
+            when(settings.getCurrent()).thenReturn(disableChannel(enabledSettings(OtpChannel.EMAIL), OtpChannel.EMAIL));
+            return new UserLoginInfo(user, PASSWORD_HASH);
+        }).when(users).getLoginInfoByEmail("user@example.com");
+        var response = call("/login-otp-email", Map.of("email", "user@example.com"));
+        assertThat(tree(response).path("code").asText()).isEqualTo("OTP_CHANNEL_DISABLED");
+        assertThat(redis.keys("auth:otp:{login}:challenge:*")).isEmpty();
+        verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void disablingLoginOrChannelDuringVerificationCannotIssueTokens(boolean disableLogin) throws Exception {
+        var challenge = startOtp();
+        doAnswer(invocation -> {
+            var changed = enabledSettings(OtpChannel.EMAIL);
+            when(settings.getCurrent()).thenReturn(disableLogin ? changed.toBuilder().loginEnabled(false).build()
+                    : disableChannel(changed, OtpChannel.EMAIL));
+            return user;
+        }).when(users).getUserById(42);
+        var response = verifyOtp(challenge.token(), challenge.code());
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(response).path("code").asText()).isEqualTo(disableLogin ? "LOGIN_DISABLED" : "OTP_CHANNEL_DISABLED");
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @Test
+    void existingSessionsCanRefreshAndLogoutWhileLoginRegistrationAndChannelsAreDisabled() throws Exception {
+        var pair = createSession();
+        when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().defaultOtpChannel(OtpChannel.EMAIL).build());
+        var response = call("/refresh", Map.of("refreshToken", pair.refreshToken()));
+        assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        String replacement = tree(response).at("/data/refreshToken").asText();
+        assertThat(call("/logout", Map.of("refreshToken", replacement)).getResponse().getStatus()).isEqualTo(200);
+        assertAllFamiliesRevoked();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void registrationDisabledPreventsCreationRegardlessOfLoginSetting(boolean loginEnabled) throws Exception {
+        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder()
+                .loginEnabled(loginEnabled).registerEnabled(false).build());
+        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(response).path("code").asText()).isEqualTo("REGISTRATION_DISABLED");
+        verifyNoInteractions(users, notifications, protection);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void registrationNormalizesContactsHashesPasswordAndDoesNotAutoLogin(boolean loginEnabled) throws Exception {
+        captureAuditLogs();
+        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder().loginEnabled(loginEnabled).build());
+        var created = user.toBuilder().email("new@example.com").phone("09111111111")
+                .status(UserAccount.AccountStatus.PENDING_VERIFICATION).emailVerified(false).phoneVerified(false).build();
+        doReturn(created).when(users).createUser(any());
+        var response = call("/register", Map.of("email", " NEW@EXAMPLE.COM ", "phone", "00989111111111",
+                "password", "new-password", "firstName", "Test", "lastName", "User"));
+        assertThat(response.getResponse().getStatus()).isEqualTo(201);
+        assertThat(response.getResponse().getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(tree(response).at("/data/userId").asLong()).isEqualTo(42);
+        assertThat(tree(response).at("/data/status").asText()).isEqualTo("PENDING_VERIFICATION");
+        var command = ArgumentCaptor.forClass(CreateUserCommand.class);
+        verify(users).createUser(command.capture());
+        assertThat(command.getValue()).satisfies(value -> {
+            assertThat(value.email()).isEqualTo("new@example.com");
+            assertThat(value.phone()).isEqualTo("+989111111111");
+            assertThat(value.firstName()).isEqualTo("Test");
+            assertThat(value.lastName()).isEqualTo("User");
+            assertThat(value.passwordHash()).isNotEqualTo("new-password");
+            assertThat(passwords.matches("new-password", value.passwordHash())).isTrue();
+        });
+        assertThat(sessionRepository.count()).isZero();
+        verifyNoInteractions(notifications);
+        assertNoCredentialLogs("new-password", command.getValue().passwordHash(), "new@example.com");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"email,new@example.com", "phone,09111111111"})
+    void registrationSupportsOneContactWithoutRequiringTheOther(String fieldName, String value) throws Exception {
+        var created = user.toBuilder().email(fieldName.equals("email") ? "new@example.com" : null)
+                .phone(fieldName.equals("phone") ? "+989111111111" : null).build();
+        doReturn(created).when(users).createUser(any());
+        assertThat(call("/register", Map.of(fieldName, value, "password", "new-password"))
+                .getResponse().getStatus()).isEqualTo(201);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "{\"email\":\"new@example.com\",\"password\":\"short\"}",
+            "{\"password\":\"new-password\"}", "{\"email\":\"09111111111\",\"password\":\"new-password\"}",
+            "{\"phone\":\"new@example.com\",\"password\":\"new-password\"}",
+            "{\"email\":\" \",\"password\":\"new-password\"}"})
+    void invalidRegistrationCannotCreateAnAccountOrExposeThePassword(String body) throws Exception {
+        var result = mvc.perform(post("/api/v1/auth/register").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest()).andReturn();
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("new-password", "short");
+        verifyNoInteractions(users, notifications);
+    }
+
+    @Test
+    void registrationRejectsOversizedUtf8PasswordsRatherThanTruncatingThem() throws Exception {
+        var result = call("/register", Map.of("email", "new@example.com", "password", "پ".repeat(37)));
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(tree(result).path("code").asText()).isEqualTo("INVALID_PASSWORD_LENGTH");
+        verifyNoInteractions(users);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"ALREADY_EXISTS,409,ACCOUNT_ALREADY_EXISTS", "INVALID_ARGUMENT,400,INVALID_REQUEST",
+            "TIMEOUT,503,AUTH_SERVICE_UNAVAILABLE", "UNAVAILABLE,503,AUTH_SERVICE_UNAVAILABLE"})
+    void registrationMapsUserServiceErrorsWithoutExposingCredentials(UserClientException.Code code, int status, String error) throws Exception {
+        doThrow(new UserClientException(code, "CreateUser")).when(users).createUser(any());
+        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
+        assertThat(response.getResponse().getStatus()).isEqualTo(status);
+        assertThat(tree(response).path("code").asText()).isEqualTo(error);
+        assertThat(response.getResponse().getContentAsString()).doesNotContain("new-password");
+    }
+
+    @Test
+    void registrationRejectsAnUpstreamResponseWithADifferentIdentity() throws Exception {
+        doReturn(user).when(users).createUser(any());
+        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(response).path("code").asText()).isEqualTo("AUTH_SERVICE_UNAVAILABLE");
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @Test
+    void registrationUsesTheExistingIpLimit() throws Exception {
+        properties.setIpMaxRequests(1);
+        protection.checkIp(CLIENT);
+        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
+        assertThat(response.getResponse().getStatus()).isEqualTo(429);
+        assertThat(tree(response).path("code").asText()).isEqualTo("RATE_LIMITED");
+        verifyNoInteractions(users);
     }
 
     @Test
@@ -437,7 +672,7 @@ class LoginFlowIntegrationTest {
     @EnumSource(OtpChannel.class)
     void accountTwoFactorUsesTheConfiguredVerifiedChannel(OtpChannel channel) throws Exception {
         setUser(twoFactorAccount());
-        when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().loginEnabled(true).defaultOtpChannel(channel).build());
+        when(settings.getCurrent()).thenReturn(enabledSettings(channel));
         var result = tree(password("user@example.com", "correct-password"));
         assertThat(result.at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
         assertThat(result.at("/data/challenge/channel").asText()).isEqualTo(channel.name());
@@ -465,7 +700,7 @@ class LoginFlowIntegrationTest {
     void twoFactorCannotFallBackToPasswordOnlyWhenTheChannelIsUnverified(OtpChannel channel) throws Exception {
         captureAuditLogs();
         setUser(user.toBuilder().emailVerified(false).phoneVerified(false).twoFactorEnabled(true).build());
-        when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().loginEnabled(true).defaultOtpChannel(channel).build());
+        when(settings.getCurrent()).thenReturn(enabledSettings(channel));
         var response = password("user@example.com", "correct-password");
         assertThat(response.getResponse().getStatus()).isEqualTo(401);
         assertThat(tree(response).path("code").asText()).isEqualTo("INVALID_CREDENTIALS");
@@ -1196,6 +1431,21 @@ class LoginFlowIntegrationTest {
                 .credentialsExpired(expired)
                 .twoFactorEnabled(false)
                 .build();
+    }
+
+    private AuthSettingDto enabledSettings(OtpChannel channel) {
+        return AuthSettingDto.builder().loginEnabled(true).registerEnabled(true).defaultOtpChannel(channel)
+                .emailNotificationEnabled(true).smsNotificationEnabled(true).inAppNotificationEnabled(true).build();
+    }
+
+    private AuthSettingDto disableChannel(AuthSettingDto current, OtpChannel channel) {
+        var builder = current.toBuilder();
+        switch (channel) {
+            case EMAIL -> builder.emailNotificationEnabled(false);
+            case SMS -> builder.smsNotificationEnabled(false);
+            case IN_APP -> builder.inAppNotificationEnabled(false);
+        }
+        return builder.build();
     }
 
     private UserAccount twoFactorAccount() {

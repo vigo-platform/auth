@@ -33,7 +33,7 @@ import java.time.Clock;
 @Slf4j
 public class LoginService {
     private final UserGrpcClient users;
-    private final AuthSettingService settings;
+    private final AuthPolicyService policy;
     private final SessionService sessions;
     private final LoginProtectionService protection;
     private final OtpChallengeRepository challenges;
@@ -44,12 +44,12 @@ public class LoginService {
     private final Clock clock;
     private final String dummyPasswordHash;
 
-    public LoginService(UserGrpcClient users, AuthSettingService settings, SessionService sessions,
+    public LoginService(UserGrpcClient users, AuthPolicyService policy, SessionService sessions,
                         LoginProtectionService protection, OtpChallengeRepository challenges,
                         NotificationService notifications, SecureTokens tokens, PasswordEncoder passwords,
                         AuthProperties properties, Clock clock) {
         this.users = users;
-        this.settings = settings;
+        this.policy = policy;
         this.sessions = sessions;
         this.protection = protection;
         this.challenges = challenges;
@@ -63,7 +63,7 @@ public class LoginService {
 
     @Transactional
     public LoginResponse loginWithPassword(PasswordLoginRequest request, ClientInfo client) {
-        requireLoginEnabled();
+        policy.requireLoginEnabled();
         protection.checkIp(client);
         String identifier = LoginIdentifier.normalize(request.identifier());
         String identifierKey = protection.identifierKey(identifier);
@@ -97,7 +97,7 @@ public class LoginService {
         protection.requireUnlocked(identifierKey);
         protection.requireUnlocked(protection.accountKey(user.userId()));
         if (user.twoFactorEnabled() || properties.isPasswordOtpRequired()) {
-            OtpChannel channel = settings.getCurrent().defaultOtpChannel();
+            OtpChannel channel = policy.requireDefaultLoginOtpChannel();
             if (!AccountEligibility.canReceiveOtp(user, channel)) {
                 log.atWarn().addKeyValue("event", "login_rejected").addKeyValue("result", "FAILURE")
                         .addKeyValue("reason", "otp_channel_unavailable").addKeyValue("user_id", user.userId())
@@ -122,13 +122,14 @@ public class LoginService {
                     .addKeyValue("device_id", client.deviceId()).log("Password verified; a second factor is required.");
             return issueChallenge(user, identifierKey, channel, true, client);
         }
+        policy.requireLoginEnabled();
         var response = LoginResponse.authenticated(sessions.create(user, client));
         clearFailuresAfterCommit(identifierKey, user.userId(), client, "PASSWORD");
         return response;
     }
 
     public LoginResponse loginWithOtp(String input, OtpChannel channel, ClientInfo client) {
-        requireLoginEnabled();
+        policy.requireLoginOtpEnabled(channel);
         protection.checkIp(client);
         String identifier = LoginIdentifier.normalize(input);
         String identifierKey = protection.identifierKey(identifier);
@@ -154,10 +155,11 @@ public class LoginService {
 
     @Transactional(noRollbackFor = AuthException.class)
     public LoginResponse verify(VerifyLoginRequest request, ClientInfo client) {
-        requireLoginEnabled();
+        policy.requireLoginEnabled();
         protection.checkIp(client);
         String token = request.mfaToken();
         var challenge = challenges.find(token).orElseThrow(AuthException::invalidOtp);
+        policy.requireLoginOtpEnabled(challenge.channel());
         var now = clock.instant();
         if (!challenge.isOpen(now)) {
             log.atWarn().addKeyValue("event", "otp_rejected").addKeyValue("result", "REJECTED")
@@ -227,6 +229,7 @@ public class LoginService {
         }
         protection.requireUnlocked(challenge.identifierKey());
         protection.requireUnlocked(protection.accountKey(user.userId()));
+        policy.requireLoginOtpEnabled(challenge.channel());
         var response = LoginResponse.authenticated(sessions.create(user, client));
         clearFailuresAfterCommit(challenge.identifierKey(), user.userId(), client, challenge.authMethod());
         return response;
@@ -234,6 +237,7 @@ public class LoginService {
 
     private LoginResponse issueChallenge(UserAccount user, String identifierKey, OtpChannel channel,
                                           boolean passwordVerified, ClientInfo client) {
+        policy.requireLoginOtpEnabled(channel);
         var now = clock.instant();
         String token = tokens.randomToken();
         String code = tokens.otp();
@@ -281,13 +285,6 @@ public class LoginService {
         } catch (UserClientException exception) {
             if (exception.getCode() == UserClientException.Code.NOT_FOUND) return null;
             throw exception;
-        }
-    }
-
-    private void requireLoginEnabled() {
-        if (!settings.getCurrent().loginEnabled()) {
-            throw new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "LOGIN_DISABLED",
-                    "Login is temporarily disabled.", "ورود موقتاً غیرفعال است.");
         }
     }
 

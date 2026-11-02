@@ -108,8 +108,10 @@ public class AuthSettingService {
             @Override
             public void afterCommit() {
                 // A delayed callback from an older transaction must not replace a newer snapshot.
-                var active = cached.updateAndGet(current -> current == null || snapshot.version() >= current.version()
-                        ? snapshot : current);
+                var active = cached.updateAndGet(current -> {
+                    if (snapshot.equals(current)) return current;
+                    return current == null || snapshot.version() >= current.version() ? snapshot : current;
+                });
                 if (active == snapshot) {
                     log.atInfo().addKeyValue("event", "auth_settings_changed").addKeyValue("action", action)
                             .addKeyValue("settings_id", snapshot.id()).addKeyValue("version", snapshot.version())

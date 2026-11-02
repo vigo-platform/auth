@@ -17,13 +17,46 @@ of silently reverting to configuration.
 `GET /api/v1/auth/settings` is public so the frontend can read settings before
 login. `AuthSettingController` maps the current cached settings to
 `AuthSettingResponse` in `data`, wrapped in the shared `ApiResponse<T>` envelope: `success`,
-`message`, `message_fa`, `data`, and a UTC ISO-8601 `timestamp`. Successful reads
+`message`, `messageFa`, `data`, and a UTC ISO-8601 `timestamp`. Successful reads
 return HTTP 200 with English/Persian messages and omit `code` entirely (it is
 reserved for errors). `data` contains only `loginEnabled`, `registerEnabled`,
 `defaultOtpChannel`, `emailNotificationEnabled`, `smsNotificationEnabled`, and
 `inAppNotificationEnabled`; internal `id`, `version`, and `updatedAt` remain in
 the service DTO and are not exposed to the frontend.
 This endpoint reads settings only; it does not create or update revisions.
+It sends `Cache-Control: no-store` so clients do not reuse stale feature switches.
+
+## Runtime behavior
+
+`AuthPolicyService` enforces settings in Auth, independently of the notification
+service's transport configuration. The notification adapter remains the delivery boundary.
+
+| Setting | Enforced behavior |
+| --- | --- |
+| `loginEnabled` | Gates password login, email/SMS OTP initiation and OTP verification. Existing sessions can still refresh and log out. |
+| `registerEnabled` | Gates `POST /api/v1/auth/register` before hashing or creating a User account. Independent of `loginEnabled`; registration never automatically logs in. |
+| `defaultOtpChannel` | Selects the required follow-up OTP after a correct password when account/global second-factor policy requires it. Explicit email/SMS endpoints retain their requested channel. |
+| `emailNotificationEnabled` | Allows EMAIL challenge creation and verification. |
+| `smsNotificationEnabled` | Allows SMS challenge creation and verification. |
+| `inAppNotificationEnabled` | Allows IN_APP password follow-up challenge creation and verification. |
+
+Disabled login/registration return HTTP 503 with `LOGIN_DISABLED` or
+`REGISTRATION_DISABLED`. A disabled selected channel returns 503
+`OTP_CHANNEL_DISABLED`, including for unknown accounts. Requests rejected at the
+initial gate do not look up users, reserve cooldowns, create challenges, send codes,
+or create sessions. Settings are checked again after slow external/password work
+before challenge/session/account creation. These checks use the currently committed
+local snapshot; they do not serialize settings changes with in-flight requests.
+
+A disabled default never falls back to another channel or password-only login.
+All channels may be disabled while password-only login remains enabled. Existing
+challenges cannot be verified while their channel is disabled; changing the default
+alone does not invalidate an outstanding challenge on an enabled channel. Re-enabling
+a channel permits an otherwise valid, unexpired challenge. The existing defaults keep
+all three channels disabled: explicitly enable a channel in the active database
+revision before using it. Environment defaults only seed a missing settings record.
+
+## Revisions and synchronization
 
 The immutable Java record `dto.setting.AuthSettingDto` has a Lombok builder and
 `toBuilder()`. It is used both for cached reads and edits:
@@ -49,16 +82,20 @@ across different rows.
 
 The cache changes only after a successful commit. Rollback leaves the previous
 snapshot intact. Older callbacks cannot replace newer revisions. `reload()` loads
-the latest database revision without creating one if none exists. Direct database
-changes and changes made by other application instances need explicit reload,
-polling, or change notifications; these mechanisms are not implemented here.
+the latest database revision without creating one if none exists.
+`AuthSettingRefresh` polls `reload()` after each `app.auth-settings-refresh-interval`
+(environment `AUTH_SETTINGS_REFRESH_INTERVAL`, default `5s`, minimum `1s`). Changes
+made by other application instances or directly in the database become visible on
+the next successful poll. A failed poll keeps the last committed snapshot and logs
+the failure; it retries on the next run. Unchanged snapshots do not emit repeated
+activation logs. Service-local `update()` still publishes immediately after commit.
 History is append-only through this service; deleting or rewriting revisions is not
 supported. Restoring old settings means inserting a new revision with the old values.
 
 ## Logging
 
-The service uses plain `log.info(...)` messages for creation from defaults, startup
-loading, reload, and new revisions, including the settings ID and version. Messages
+The service uses structured `auth_settings_changed` events for creation from defaults,
+startup loading, changed reloads, and new revisions, including settings ID and version. Messages
 are written only after commit and successful cache application. Normal reads, failed
 operations, and skipped older snapshots do not produce success messages.
 
@@ -67,7 +104,8 @@ messages as JSON through the existing Logback configuration.
 
 ## Schema prerequisites
 
-No migrations were generated or run. Before running the application:
+Runtime switch enforcement requires no new schema migration. For existing deployments,
+verify the preexisting schema prerequisites:
 
 - Keep generated identity IDs; there is no fixed-ID or singleton constraint.
 - If `CHECK (id = 1)` was installed after the earlier design, remove it through a migration.
@@ -90,8 +128,14 @@ is not used to select the current revision or trigger cache reload.
 `AuthSettingServiceTest` exercises real Spring transaction interception and commit/
 rollback handling with mocked JDBC and repository interfaces, without a database or
 Flyway. It covers startup defaults, preservation of history, increasing versions,
-stale edits, cache visibility, reload, and failures. PostgreSQL query execution and
-schema constraints still need verification against a disposable PostgreSQL database.
+stale edits, cache visibility, reload, scheduled refresh recovery, unchanged snapshots,
+and failures.
+
+`AuthPolicyServiceTest` checks every combination of the three channel switches,
+default selection and independent login/registration switches. `LoginFlowIntegrationTest`
+checks HTTP gates, setting changes between authentication stages, channel disablement
+after issuance, existing-session behavior, registration, and error handling using
+disposable PostgreSQL and Redis with User and notification test doubles.
 
 `AuthSettingRepositoryLockTest` additionally verifies the real repository query on
 PostgreSQL, including mutual exclusion and release after both commit and rollback.

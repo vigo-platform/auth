@@ -61,7 +61,7 @@ public class AuthSetting {
     @Column(name = "default_otp_channel", nullable = false, length = 16)
     private OtpChannel defaultOtpChannel = OtpChannel.EMAIL;
 
-    // Optional notifications are independent of authentication challenge delivery.
+    // Global channel switches, enforced by Auth before OTP issuance and verification.
     @Column(name = "email_notification_enabled", nullable = false)
     private boolean emailNotificationEnabled;
 

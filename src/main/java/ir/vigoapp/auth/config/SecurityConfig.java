@@ -1,11 +1,11 @@
-package ir.vigoapp.auth.security;
+package ir.vigoapp.auth.config;
 
-import ir.vigoapp.auth.config.ApplicationProperties;
 import ir.vigoapp.auth.security.handler.CustomAccessDeniedHandler;
 import ir.vigoapp.auth.security.handler.CustomAuthEntryPointHandler;
 import ir.vigoapp.auth.security.jwt.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -15,8 +15,6 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-
-import org.springframework.boot.web.servlet.FilterRegistrationBean;
 
 /**
  * <h2>Core Security Configuration</h2>

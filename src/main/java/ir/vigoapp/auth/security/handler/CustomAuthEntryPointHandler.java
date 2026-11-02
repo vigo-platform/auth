@@ -2,12 +2,13 @@ package ir.vigoapp.auth.security.handler;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ir.vigoapp.auth.dto.ApiResponse;
-import ir.vigoapp.auth.service.login.ClientInfo;
+import ir.vigoapp.auth.dto.ClientInfo;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.AuthenticationException;
@@ -16,7 +17,6 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import org.springframework.http.HttpHeaders;
 
 @Slf4j
 @Component

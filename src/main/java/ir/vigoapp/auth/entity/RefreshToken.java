@@ -1,6 +1,6 @@
 package ir.vigoapp.auth.entity;
 
-import ir.vigoapp.auth.service.login.ClientInfo;
+import ir.vigoapp.auth.dto.ClientInfo;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -32,8 +32,8 @@ public class RefreshToken {
     @Column(length = 128, updatable = false)
     private String deviceId;
     private Instant consumedAt;
-    @Column(name = "is_revoked", nullable = false)
-    private boolean revoked;
+    @Column(name = "is_active", nullable = false)
+    private boolean active;
     private Instant revokedAt;
 
     public RefreshToken(AuthSession session, String tokenHash, Instant now, Instant expiresAt, ClientInfo client) {
@@ -44,14 +44,21 @@ public class RefreshToken {
         this.ipAddress = client.ipAddress();
         this.userAgent = client.userAgent();
         this.deviceId = client.deviceId();
+        this.active = expiresAt.isAfter(now) && session.isActive(now);
     }
 
     public void consume(Instant now) {
-        consumedAt = now;
+        active = false;
+        if (consumedAt == null) consumedAt = now;
     }
 
-    public boolean isActive(Instant now) {
-        return !revoked && revokedAt == null && consumedAt == null
+    public void revoke(Instant now) {
+        active = false;
+        if (revokedAt == null) revokedAt = now;
+    }
+
+    public boolean isUsable(Instant now) {
+        return active && revokedAt == null && consumedAt == null
                 && expiresAt.isAfter(now) && session.isActive(now);
     }
 }

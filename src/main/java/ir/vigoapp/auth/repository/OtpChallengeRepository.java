@@ -1,7 +1,8 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.repository;
 
 import ir.vigoapp.auth.config.AuthProperties;
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChallenge;
+import ir.vigoapp.auth.model.OtpChannel;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -14,7 +15,7 @@ import java.util.Optional;
 
 @Component
 @RequiredArgsConstructor
-public class OtpChallengeStore {
+public class OtpChallengeRepository {
     private static final String PREFIX = "auth:otp:{login}:challenge:";
     private static final DefaultRedisScript<Long> CREATE = script("otp-create.lua");
     private static final DefaultRedisScript<Long> TRANSITION = script("otp-transition.lua");
@@ -26,17 +27,28 @@ public class OtpChallengeStore {
                 List.of(PREFIX + challenge.token(), "auth:otp:{login}:latest:" + accountKey),
                 Long.toString(properties.getOtpTtl().toMillis()), challenge.identifierKey(), challenge.destination(),
                 Long.toString(challenge.userId()), Long.toString(challenge.credentialVersion()), challenge.code(),
-                challenge.channel().name(), Long.toString(challenge.expiresAt().toEpochMilli()));
+                challenge.channel().name(), Long.toString(challenge.expiresAt().toEpochMilli()),
+                Boolean.toString(challenge.passwordVerified()));
         if (!Long.valueOf(1).equals(result)) throw new IllegalStateException("Redis did not create the login challenge");
     }
 
     public Optional<OtpChallenge> find(String token) {
         var values = redis.<String, String>opsForHash().entries(PREFIX + token);
         if (values.isEmpty()) return Optional.empty();
-        return Optional.of(new OtpChallenge(token, values.get("identifierKey"), values.get("destination"),
-                Long.parseLong(values.get("userId")), Long.parseLong(values.get("credentialVersion")), values.get("code"),
-                OtpChannel.valueOf(values.get("channel")), Instant.ofEpochMilli(Long.parseLong(values.get("expiresAt"))),
-                Integer.parseInt(values.get("failedAttempts")), values.get("state")));
+        return Optional.of(OtpChallenge.builder()
+                .token(token)
+                .identifierKey(values.get("identifierKey"))
+                .destination(values.get("destination"))
+                .userId(Long.parseLong(values.get("userId")))
+                .credentialVersion(Long.parseLong(values.get("credentialVersion")))
+                .code(values.get("code"))
+                .channel(OtpChannel.valueOf(values.get("channel")))
+                .expiresAt(Instant.ofEpochMilli(Long.parseLong(values.get("expiresAt"))))
+                .failedAttempts(Integer.parseInt(values.get("failedAttempts")))
+                .state(values.get("state"))
+                // Older challenges contain no proof of password verification; never infer one.
+                .passwordVerified(Boolean.parseBoolean(values.get("passwordVerified")))
+                .build());
     }
 
     public int failed(String token) {

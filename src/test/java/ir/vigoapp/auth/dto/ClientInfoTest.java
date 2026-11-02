@@ -1,4 +1,4 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.dto;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -17,6 +17,19 @@ class ClientInfoTest {
         assertThat(client.ipAddress()).isEqualTo("198.51.100.24");
         assertThat(client.userAgent()).hasSize(512).doesNotContain("\r", "\n", "\u2028");
         assertThat(client.deviceId()).hasSize(128).doesNotContain("\n");
+        assertThat(client.toString()).isEqualTo("ClientInfo[REDACTED]");
+    }
+
+    @Test
+    void builderAlsoSanitizesMetadataAndAllowsMissingHeaders() {
+        var client = ClientInfo.builder()
+                .ipAddress("x".repeat(80))
+                .userAgent("Browser\r\nforged\u2028line")
+                .build();
+
+        assertThat(client.ipAddress()).hasSize(64);
+        assertThat(client.userAgent()).isEqualTo("Browser__forged_line");
+        assertThat(client.deviceId()).isNull();
         assertThat(client.toString()).isEqualTo("ClientInfo[REDACTED]");
     }
 }

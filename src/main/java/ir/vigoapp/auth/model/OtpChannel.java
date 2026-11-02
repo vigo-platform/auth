@@ -1,4 +1,4 @@
-package ir.vigoapp.auth.entity;
+package ir.vigoapp.auth.model;
 
 /**
  * Defines the supported delivery channels for one-time passwords.

@@ -1,6 +1,9 @@
 package ir.vigoapp.auth.client.user.model;
 
+import lombok.Builder;
+
 /** Caller authorizes change/reset before sending the encoded password hash. */
+@Builder
 public record ChangePasswordCommand(
         long userId,
         String newPasswordHash,

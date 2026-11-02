@@ -1,6 +1,6 @@
 package ir.vigoapp.auth.config;
 
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;

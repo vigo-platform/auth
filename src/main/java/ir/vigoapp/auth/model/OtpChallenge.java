@@ -1,14 +1,20 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.model;
 
-import ir.vigoapp.auth.entity.OtpChannel;
+import lombok.Builder;
+
 import java.time.Instant;
 
 /** Internal Redis state; never serialize this record into an API response or log. */
+@Builder
 public record OtpChallenge(String token, String identifierKey, String destination, long userId,
                            long credentialVersion, String code, OtpChannel channel, Instant expiresAt,
-                           int failedAttempts, String state) {
+                           int failedAttempts, String state, boolean passwordVerified) {
     public boolean isOpen(Instant now) {
         return "OPEN".equals(state) && expiresAt.isAfter(now);
+    }
+
+    public String authMethod() {
+        return passwordVerified ? "PASSWORD_OTP" : "OTP";
     }
 
     @Override

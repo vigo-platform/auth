@@ -81,6 +81,7 @@ auth:
   session-ttl: ${AUTH_SESSION_TTL:30d}
   retention: ${AUTH_RETENTION:7d}
   cleanup-interval: ${AUTH_CLEANUP_INTERVAL:1h}
+  refresh-token-state-interval: ${AUTH_REFRESH_TOKEN_STATE_INTERVAL:1m}
 
 management:
   endpoints:

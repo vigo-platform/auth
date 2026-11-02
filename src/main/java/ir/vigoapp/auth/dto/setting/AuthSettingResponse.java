@@ -1,8 +1,10 @@
 package ir.vigoapp.auth.dto.setting;
 
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
+import lombok.Builder;
 
 /** Frontend settings view, excluding internal revision metadata. */
+@Builder
 public record AuthSettingResponse(
         boolean loginEnabled,
         boolean registerEnabled,
@@ -12,12 +14,13 @@ public record AuthSettingResponse(
         boolean inAppNotificationEnabled
 ) {
     public static AuthSettingResponse from(AuthSettingDto settings) {
-        return new AuthSettingResponse(
-                settings.loginEnabled(),
-                settings.registerEnabled(),
-                settings.defaultOtpChannel(),
-                settings.emailNotificationEnabled(),
-                settings.smsNotificationEnabled(),
-                settings.inAppNotificationEnabled());
+        return AuthSettingResponse.builder()
+                .loginEnabled(settings.loginEnabled())
+                .registerEnabled(settings.registerEnabled())
+                .defaultOtpChannel(settings.defaultOtpChannel())
+                .emailNotificationEnabled(settings.emailNotificationEnabled())
+                .smsNotificationEnabled(settings.smsNotificationEnabled())
+                .inAppNotificationEnabled(settings.inAppNotificationEnabled())
+                .build();
     }
 }

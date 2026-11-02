@@ -1,6 +1,7 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.service;
 
 import ir.vigoapp.auth.config.AuthProperties;
+import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.exception.AuthException;
 import ir.vigoapp.auth.security.SecureTokens;
 import lombok.RequiredArgsConstructor;

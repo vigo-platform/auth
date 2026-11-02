@@ -1,4 +1,4 @@
-package ir.vigoapp.auth.controller.setting;
+package ir.vigoapp.auth.controller;
 
 import ir.vigoapp.auth.dto.ApiResponse;
 import ir.vigoapp.auth.dto.setting.AuthSettingResponse;

@@ -3,21 +3,23 @@ package ir.vigoapp.auth.client.user;
 import io.grpc.*;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
-import ir.vigoapp.auth.config.ApplicationProperties;
-import ir.vigoapp.auth.config.UserGrpcConfig;
+import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.ChangePasswordCommand;
 import ir.vigoapp.auth.client.user.model.CreateUserCommand;
 import ir.vigoapp.auth.client.user.model.UserAccount;
-import ir.vigoapp.auth.client.user.model.UserLoginInfo;
-import ir.vigoapp.auth.client.user.exception.UserClientException;
+import ir.vigoapp.auth.config.ApplicationProperties;
+import ir.vigoapp.auth.config.UserGrpcConfig;
 import ir.vigoapp.contracts.user.v1.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.*;
 
 class UserGrpcClientTest {
@@ -95,6 +97,61 @@ class UserGrpcClientTest {
     }
 
     @ParameterizedTest
+    @CsvSource({"NOT_FOUND", "INVALID_ARGUMENT"})
+    void phoneLookupSupportsAUserServiceThatStoresLocalIranianNumbers(Status.Code rejection) {
+        user.canonicalPhoneRejection = Status.fromCode(rejection);
+        user.login = user.login.toBuilder().setUser(user.account.toBuilder()
+                .setPhone("09111111111").setPhoneVerified(true)).build();
+
+        var result = client.getLoginInfoByPhone("+989111111111");
+
+        assertThat(result.user().phone()).isEqualTo("09111111111");
+        assertThat(user.requests).extracting(request -> ((GetUserLoginInfoByPhoneRequest) request).getPhone())
+                .containsExactly("+989111111111", "09111111111");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"UNAVAILABLE", "DEADLINE_EXCEEDED", "PERMISSION_DENIED", "UNAUTHENTICATED"})
+    void phoneLookupDoesNotFallBackOnTransportOrAuthorizationFailures(Status.Code failure) {
+        user.failure = Status.fromCode(failure);
+
+        assertThatThrownBy(() -> client.getLoginInfoByPhone("+989111111111"))
+                .isInstanceOf(UserClientException.class);
+        assertThat(user.requests).hasSize(1);
+    }
+
+    @Test
+    void internationalPhoneLookupDoesNotTryAnIranianAlias() {
+        user.failure = Status.NOT_FOUND;
+
+        assertThatThrownBy(() -> client.getLoginInfoByPhone("+447700900123"))
+                .isInstanceOf(UserClientException.class);
+        assertThat(user.requests).hasSize(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preservesTwoFactorEnrollmentInEveryAccountBearingRpc(boolean enabled) {
+        user.account = user.account.toBuilder().setTwoFactorEnabled(enabled).build();
+        user.login = user.login.toBuilder().setUser(user.account).build();
+
+        assertThat(client.getLoginInfoByEmail("user@example.com").user().twoFactorEnabled()).isEqualTo(enabled);
+        assertThat(client.getLoginInfoByPhone("+989121234567").user().twoFactorEnabled()).isEqualTo(enabled);
+        assertThat(client.getLoginInfoById(7).user().twoFactorEnabled()).isEqualTo(enabled);
+        assertThat(client.getUserById(7).twoFactorEnabled()).isEqualTo(enabled);
+        assertThat(client.createUser(new CreateUserCommand("user@example.com", null, null, null, "hash"))
+                .twoFactorEnabled()).isEqualTo(enabled);
+    }
+
+    @Test
+    void absentProtoBooleanDefaultsToTwoFactorDisabled() {
+        user.account = user.account.toBuilder().clearTwoFactorEnabled().build();
+        user.login = user.login.toBuilder().setUser(user.account).build();
+        assertThat(client.getLoginInfoById(7).user().twoFactorEnabled()).isFalse();
+        assertThat(client.getUserById(7).twoFactorEnabled()).isFalse();
+    }
+
+    @ParameterizedTest
     @CsvSource({"NOT_FOUND,NOT_FOUND", "ALREADY_EXISTS,ALREADY_EXISTS", "INVALID_ARGUMENT,INVALID_ARGUMENT",
             "ABORTED,CONFLICT", "UNAVAILABLE,UNAVAILABLE", "DEADLINE_EXCEEDED,TIMEOUT",
             "PERMISSION_DENIED,PERMISSION_DENIED", "UNAUTHENTICATED,UNAUTHENTICATED",
@@ -164,6 +221,7 @@ class UserGrpcClientTest {
         final List<Object> requests = new CopyOnWriteArrayList<>();
         final List<Long> deadlines = new CopyOnWriteArrayList<>();
         volatile Status failure;
+        volatile Status canonicalPhoneRejection;
         volatile boolean neverRespond;
         volatile UserAuthInfo account = UserAuthInfo.newBuilder().setUserId(7).setCredentialVersion(3)
                 .setEmail("user@example.com").setEmailVerified(true).addRoles("USER")
@@ -176,6 +234,11 @@ class UserGrpcClientTest {
             deadlines.add(Context.current().getDeadline().timeRemaining(TimeUnit.NANOSECONDS));
             if (neverRespond) return;
             if (failure != null) { observer.onError(failure.asRuntimeException()); return; }
+            if (canonicalPhoneRejection != null && request instanceof GetUserLoginInfoByPhoneRequest phone
+                    && phone.getPhone().startsWith("+98")) {
+                observer.onError(canonicalPhoneRejection.asRuntimeException());
+                return;
+            }
             observer.onNext(response);
             observer.onCompleted();
         }

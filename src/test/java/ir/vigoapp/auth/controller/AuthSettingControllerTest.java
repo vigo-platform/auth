@@ -1,7 +1,7 @@
-package ir.vigoapp.auth.controller.setting;
+package ir.vigoapp.auth.controller;
 
 import ir.vigoapp.auth.dto.setting.AuthSettingDto;
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.service.AuthSettingService;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;

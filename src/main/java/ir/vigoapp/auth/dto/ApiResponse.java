@@ -1,6 +1,5 @@
 package ir.vigoapp.auth.dto;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Builder;
 
@@ -27,6 +26,13 @@ public record ApiResponse<T>(
     }
 
     public static <T> ApiResponse<T> failure(String code, String message, String messageFa, T data) {
-        return new ApiResponse<>(false, code, message, messageFa, data, Instant.now().toString());
+        return ApiResponse.<T>builder()
+                .success(false)
+                .code(code)
+                .message(message)
+                .messageFa(messageFa)
+                .data(data)
+                .timestamp(Instant.now().toString())
+                .build();
     }
 }

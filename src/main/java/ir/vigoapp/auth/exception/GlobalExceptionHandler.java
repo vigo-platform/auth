@@ -2,7 +2,7 @@ package ir.vigoapp.auth.exception;
 
 import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.dto.ApiResponse;
-import ir.vigoapp.auth.service.login.ClientInfo;
+import ir.vigoapp.auth.dto.ClientInfo;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;

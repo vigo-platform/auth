@@ -4,6 +4,7 @@ import ir.vigoapp.auth.client.user.UserGrpcClient;
 import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.config.AuthProperties;
+import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.token.TokenResponse;
 import ir.vigoapp.auth.entity.AuthSession;
 import ir.vigoapp.auth.entity.RefreshToken;
@@ -12,9 +13,7 @@ import ir.vigoapp.auth.repository.AuthSessionRepository;
 import ir.vigoapp.auth.repository.RefreshTokenRepository;
 import ir.vigoapp.auth.security.SecureTokens;
 import ir.vigoapp.auth.security.jwt.AccessTokenService;
-import ir.vigoapp.auth.service.login.AccountEligibility;
-import ir.vigoapp.auth.service.login.ClientInfo;
-import ir.vigoapp.auth.service.login.LoginProtectionService;
+import ir.vigoapp.auth.security.login.AccountEligibility;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -84,19 +83,20 @@ public class SessionService {
                     .addKeyValue("device_id", client.deviceId()).log("Consumed refresh token reused; session revocation requested.");
             throw AuthException.invalidRefreshToken();
         }
-        if (token.isRevoked() || token.getRevokedAt() != null) {
-            log.atWarn().addKeyValue("event", "refresh_rejected").addKeyValue("result", "REJECTED")
-                    .addKeyValue("reason", "refresh_revoked").addKeyValue("user_id", session.getUserId())
-                    .addKeyValue("session_id", sessionId).addKeyValue("ip_address", client.ipAddress())
-                    .log("Revoked refresh token rejected.");
-            throw AuthException.invalidRefreshToken();
-        }
         if (!token.getExpiresAt().isAfter(now)) {
             revokeSession(session, now, "REFRESH_EXPIRED");
             log.atWarn().addKeyValue("event", "refresh_rejected").addKeyValue("result", "REJECTED")
                     .addKeyValue("reason", "refresh_expired").addKeyValue("user_id", session.getUserId())
                     .addKeyValue("session_id", sessionId).addKeyValue("ip_address", client.ipAddress())
                     .log("Expired refresh token rejected.");
+            throw AuthException.invalidRefreshToken();
+        }
+        if (!token.isActive() || token.getRevokedAt() != null) {
+            token.revoke(now);
+            log.atWarn().addKeyValue("event", "refresh_rejected").addKeyValue("result", "REJECTED")
+                    .addKeyValue("reason", "refresh_inactive").addKeyValue("user_id", session.getUserId())
+                    .addKeyValue("session_id", sessionId).addKeyValue("ip_address", client.ipAddress())
+                    .log("Inactive refresh token rejected.");
             throw AuthException.invalidRefreshToken();
         }
 
@@ -123,7 +123,7 @@ public class SessionService {
 
         // Recheck time after the remote call, before consuming or issuing anything.
         now = clock.instant();
-        if (!token.isActive(now)) {
+        if (!token.isUsable(now)) {
             revokeSession(session, now, session.getExpiresAt().isAfter(now) ? "REFRESH_EXPIRED" : "SESSION_EXPIRED");
             throw AuthException.invalidRefreshToken();
         }
@@ -199,7 +199,12 @@ public class SessionService {
         if (refreshExpires.isAfter(session.getExpiresAt())) refreshExpires = session.getExpiresAt();
         refreshTokens.save(new RefreshToken(session, tokens.hash(refreshToken), now, refreshExpires, client));
         var accessToken = accessTokens.issue(user, session, now);
-        return new TokenResponse("Bearer", accessToken.getTokenValue(), Duration.between(now, accessToken.getExpiresAt()).toSeconds(),
-                refreshToken, Duration.between(now, refreshExpires).toSeconds());
+        return TokenResponse.builder()
+                .tokenType("Bearer")
+                .accessToken(accessToken.getTokenValue())
+                .accessExpiresIn(Duration.between(now, accessToken.getExpiresAt()).toSeconds())
+                .refreshToken(refreshToken)
+                .refreshExpiresIn(Duration.between(now, refreshExpires).toSeconds())
+                .build();
     }
 }

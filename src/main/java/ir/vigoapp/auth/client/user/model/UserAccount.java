@@ -1,8 +1,11 @@
 package ir.vigoapp.auth.client.user.model;
 
+import lombok.Builder;
+
 import java.util.List;
 
 /** Null email/phone means the corresponding identifier is absent. */
+@Builder(toBuilder = true)
 public record UserAccount(
         long userId,
         List<String> roles,
@@ -12,7 +15,8 @@ public record UserAccount(
         boolean emailVerified,
         boolean phoneVerified,
         long credentialVersion,
-        boolean credentialsExpired) {
+        boolean credentialsExpired,
+        boolean twoFactorEnabled) {
     public UserAccount {
         roles = List.copyOf(roles);
     }

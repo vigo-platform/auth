@@ -7,8 +7,8 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
-import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.hibernate.validator.constraints.time.DurationMin;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
 import java.time.Duration;
@@ -50,6 +50,8 @@ public class AuthProperties {
     private Duration retention = Duration.ofDays(7);
     @NotNull @DurationMin(seconds = 1)
     private Duration cleanupInterval = Duration.ofHours(1);
+    @NotNull @DurationMin(seconds = 1)
+    private Duration refreshTokenStateInterval = Duration.ofMinutes(1);
 
     @AssertTrue(message = "lockDuration <= maxLockDuration <= failureWindow is required")
     public boolean isLockPolicyValid() {

@@ -1,5 +1,8 @@
 package ir.vigoapp.auth.service;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ir.vigoapp.auth.client.user.UserGrpcClient;
@@ -7,23 +10,18 @@ import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.client.user.model.UserLoginInfo;
 import ir.vigoapp.auth.config.AuthProperties;
+import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.login.VerifyLoginRequest;
 import ir.vigoapp.auth.dto.setting.AuthSettingDto;
-import ir.vigoapp.auth.entity.OtpChannel;
 import ir.vigoapp.auth.exception.AuthException;
+import ir.vigoapp.auth.repository.OtpChallengeRepository;
+import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.repository.AuthSessionRepository;
-import ir.vigoapp.auth.service.login.OtpChallengeStore;
 import ir.vigoapp.auth.repository.RefreshTokenRepository;
+import ir.vigoapp.auth.scheduling.AuthStateCleanup;
 import ir.vigoapp.auth.security.SecureTokens;
-import ir.vigoapp.auth.service.login.ClientInfo;
-import ir.vigoapp.auth.service.login.LoginProtectionService;
-import ir.vigoapp.auth.service.notification.NotificationService;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
-import org.slf4j.LoggerFactory;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -31,6 +29,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -87,7 +86,7 @@ class LoginFlowIntegrationTest {
     @Autowired AuthStateCleanup cleanup;
     @Autowired AuthSessionRepository sessionRepository;
     @Autowired RefreshTokenRepository refreshRepository;
-    @Autowired OtpChallengeStore challenges;
+    @Autowired OtpChallengeRepository challenges;
     @Autowired SecureTokens tokens;
     @Autowired AuthProperties properties;
     @Autowired JwtDecoder decoder;
@@ -195,6 +194,53 @@ class LoginFlowIntegrationTest {
         verify(notifications).sendLoginOtp(eq(42L), eq(OtpChannel.SMS), eq("+989123456789"), anyString());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"09111111111", "+989111111111", "00989111111111", "9111111111"})
+    void localPhoneFromUserCreatesAVerifiableRedisOtpAndSharesTheCanonicalCooldown(String input) throws Exception {
+        var localUser = user.toBuilder().phone("09111111111").build();
+        doReturn(new UserLoginInfo(localUser, PASSWORD_HASH)).when(users).getLoginInfoByPhone("+989111111111");
+        doReturn(localUser).when(users).getUserById(42);
+
+        var response = call("/login-otp-phone", Map.of("phone", input));
+        assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        String token = tree(response).at("/data/challenge/mfaToken").asText();
+        var stored = challenges.find(token).orElseThrow();
+        assertThat(stored.destination()).isEqualTo("09111111111");
+        assertThat(stored.identifierKey()).isEqualTo("identifier:+989111111111");
+        assertThat(stored.code()).matches("[0-9]{6}");
+        verify(notifications).sendLoginOtp(42L, OtpChannel.SMS, "09111111111", stored.code());
+
+        var resend = call("/login-otp-phone", Map.of("phone", "+989111111111"));
+        assertThat(resend.getResponse().getStatus()).isEqualTo(429);
+        assertThat(tree(resend).path("code").asText()).isEqualTo("OTP_COOLDOWN");
+        assertThat(verifyOtp(token, stored.code()).getResponse().getStatus()).isEqualTo(200);
+        assertThat(sessionRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void passwordPhoneLoginAcceptsTheEquivalentLocalPhoneReturnedByUser() throws Exception {
+        var localUser = user.toBuilder().phone("09111111111").build();
+        doReturn(new UserLoginInfo(localUser, PASSWORD_HASH)).when(users).getLoginInfoByPhone("+989111111111");
+
+        var response = password("09111111111", "correct-password");
+
+        assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(response).at("/data/step").asText()).isEqualTo("SUCCESS");
+        assertThat(sessionRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void phoneLookupStillRejectsAnAccountWithADifferentPhone() throws Exception {
+        var wrongUser = user.toBuilder().phone("09111111112").build();
+        doReturn(new UserLoginInfo(wrongUser, PASSWORD_HASH)).when(users).getLoginInfoByPhone("+989111111111");
+
+        var response = call("/login-otp-phone", Map.of("phone", "09111111111"));
+
+        assertThat(response.getResponse().getStatus()).isEqualTo(503);
+        assertThat(redis.keys("auth:otp:{login}:challenge:*")).isEmpty();
+        verifyNoInteractions(notifications);
+    }
+
     @Test
     void otpCanBeUsedOnlyOnceAndStoresReadableValuesInRedis() throws Exception {
         var challenge = startOtp();
@@ -221,13 +267,16 @@ class LoginFlowIntegrationTest {
                 .containsEntry("destination", "user@example.com")
                 .containsEntry("userId", "42").containsEntry("credentialVersion", "3")
                 .containsEntry("code", challenge.code()).containsEntry("channel", "EMAIL")
+                .containsEntry("passwordVerified", "false")
                 .doesNotContainKeys("codeHash", "destinationKey", "tokenHash");
         assertThat(challenges.find(challenge.token()).orElseThrow().toString()).doesNotContain(challenge.code(), challenge.token());
     }
 
-    @Test
-    void thirdWrongOtpDeletesTheChallengeAndEvenTheCorrectCodeThenFails() throws Exception {
-        var challenge = startOtp();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void thirdWrongOtpDeletesTheChallengeAndEvenTheCorrectCodeThenFails(boolean twoFactorEnabled) throws Exception {
+        if (twoFactorEnabled) setUser(twoFactorAccount());
+        var challenge = twoFactorEnabled ? startPasswordOtp() : startOtp();
         String wrong = challenge.code().equals("000000") ? "000001" : "000000";
         for (int i = 1; i <= 2; i++) {
             assertThat(verifyOtp(challenge.token(), wrong).getResponse().getStatus()).isEqualTo(401);
@@ -255,9 +304,11 @@ class LoginFlowIntegrationTest {
         assertThat(sessionRepository.count()).isZero();
     }
 
-    @Test
-    void expiredOtpCannotIssueTokens() throws Exception {
-        var challenge = startOtp();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void expiredOtpCannotIssueTokens(boolean twoFactorEnabled) throws Exception {
+        if (twoFactorEnabled) setUser(twoFactorAccount());
+        var challenge = twoFactorEnabled ? startPasswordOtp() : startOtp();
         now.updateAndGet(value -> value.plus(Duration.ofMinutes(6)));
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
         assertThat(refreshRepository.count()).isZero();
@@ -308,9 +359,11 @@ class LoginFlowIntegrationTest {
         verifyNoInteractions(notifications);
     }
 
-    @Test
-    void concurrentOtpVerificationHasOnlyOneWinner() throws Exception {
-        var challenge = startOtp();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void concurrentOtpVerificationHasOnlyOneWinner(boolean twoFactorEnabled) throws Exception {
+        if (twoFactorEnabled) setUser(twoFactorAccount());
+        var challenge = twoFactorEnabled ? startPasswordOtp() : startOtp();
         var results = race(() -> {
             login.verify(new VerifyLoginRequest(challenge.token(), challenge.code()), CLIENT);
             return "SUCCESS";
@@ -330,6 +383,142 @@ class LoginFlowIntegrationTest {
         assertThat(verifyOtp(result.at("/data/challenge/mfaToken").asText(), code.getValue()).getResponse().getStatus()).isEqualTo(200);
     }
 
+    @ParameterizedTest
+    @CsvSource({
+            "false, false, user@example.com", "false, true, user@example.com",
+            "true, false, user@example.com", "true, true, user@example.com",
+            "false, false, 09123456789", "false, true, 09123456789",
+            "true, false, 09123456789", "true, true, 09123456789"
+    })
+    void passwordLoginCombinesAccountEnrollmentAndGlobalPolicy(boolean enabled, boolean global, String identifier) throws Exception {
+        captureAuditLogs();
+        if (enabled) setUser(twoFactorAccount());
+        properties.setPasswordOtpRequired(global);
+        var response = password(identifier, "correct-password");
+        assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        var result = tree(response);
+        if (!enabled && !global) {
+            assertThat(result.at("/data/step").asText()).isEqualTo("SUCCESS");
+            assertThat(sessionRepository.count()).isEqualTo(1);
+            verifyNoInteractions(notifications);
+            return;
+        }
+
+        assertThat(result.at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(result.at("/data/tokens").isMissingNode()).isTrue();
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(refreshRepository.count()).isZero();
+        var code = ArgumentCaptor.forClass(String.class);
+        verify(notifications).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
+        String token = result.at("/data/challenge/mfaToken").asText();
+        assertThat(challenges.find(token).orElseThrow().passwordVerified()).isTrue();
+        assertThat(redis.opsForHash().get("auth:otp:{login}:challenge:" + token, "passwordVerified")).isEqualTo("true");
+        var required = auditEvent("login_second_factor_required");
+        assertThat(field(required, "two_factor_enabled")).isEqualTo(enabled);
+        assertThat(field(required, "password_otp_required")).isEqualTo(global);
+        assertThat(field(required, "auth_method")).isEqualTo("PASSWORD_OTP");
+        assertThat(field(required, "ip_address")).isEqualTo("127.0.0.1");
+        assertThat(field(auditEvent("otp_challenge_created"), "auth_method")).isEqualTo("PASSWORD_OTP");
+        assertThat(auditLogs.list).noneMatch(event -> "login_success".equals(field(event, "event")));
+
+        String wrong = code.getValue().equals("000000") ? "000001" : "000000";
+        assertThat(verifyOtp(token, wrong).getResponse().getStatus()).isEqualTo(401);
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(field(auditEvent("otp_verification_failed"), "auth_method")).isEqualTo("PASSWORD_OTP");
+        assertThat(verifyOtp(token, code.getValue()).getResponse().getStatus()).isEqualTo(200);
+        assertThat(sessionRepository.count()).isEqualTo(1);
+        assertThat(refreshRepository.count()).isEqualTo(1);
+        assertThat(field(auditEvent("login_success"), "auth_method")).isEqualTo("PASSWORD_OTP");
+        assertThat(verifyOtp(token, code.getValue()).getResponse().getStatus()).isEqualTo(401);
+        assertNoCredentialLogs("correct-password", PASSWORD_HASH, "user@example.com", user.phone(), token, code.getValue(), wrong);
+    }
+
+    @ParameterizedTest
+    @EnumSource(OtpChannel.class)
+    void accountTwoFactorUsesTheConfiguredVerifiedChannel(OtpChannel channel) throws Exception {
+        setUser(twoFactorAccount());
+        when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().loginEnabled(true).defaultOtpChannel(channel).build());
+        var result = tree(password("user@example.com", "correct-password"));
+        assertThat(result.at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(result.at("/data/challenge/channel").asText()).isEqualTo(channel.name());
+        String destination = switch (channel) {
+            case EMAIL -> user.email();
+            case SMS -> user.phone();
+            case IN_APP -> "42";
+        };
+        var code = ArgumentCaptor.forClass(String.class);
+        verify(notifications).sendLoginOtp(eq(42L), eq(channel), eq(destination), code.capture());
+        assertThat(verifyOtp(result.at("/data/challenge/mfaToken").asText(), code.getValue()).getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void twoFactorDoesNotIssueAChallengeForAnIncorrectPassword() throws Exception {
+        setUser(twoFactorAccount());
+        assertThat(password("user@example.com", "wrong-password").getResponse().getStatus()).isEqualTo(401);
+        assertThat(redis.keys("auth:otp:{login}:challenge:*")).isEmpty();
+        assertThat(sessionRepository.count()).isZero();
+        verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OtpChannel.class, names = {"EMAIL", "SMS"})
+    void twoFactorCannotFallBackToPasswordOnlyWhenTheChannelIsUnverified(OtpChannel channel) throws Exception {
+        captureAuditLogs();
+        setUser(user.toBuilder().emailVerified(false).phoneVerified(false).twoFactorEnabled(true).build());
+        when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().loginEnabled(true).defaultOtpChannel(channel).build());
+        var response = password("user@example.com", "correct-password");
+        assertThat(response.getResponse().getStatus()).isEqualTo(401);
+        assertThat(tree(response).path("code").asText()).isEqualTo("INVALID_CREDENTIALS");
+        assertThat(field(auditEvent("login_rejected"), "reason")).isEqualTo("otp_channel_unavailable");
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(redis.keys("auth:otp:{login}:challenge:*")).isEmpty();
+        verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"/login-otp-email, email, user@example.com, EMAIL", "/login-otp-phone, phone, 09123456789, SMS"})
+    void passwordlessOtpCannotBypassTwoFactorAndDoesNotRevealEnrollment(String path, String fieldName, String identifier, String channel) throws Exception {
+        captureAuditLogs();
+        setUser(twoFactorAccount());
+        var response = call(path, Map.of(fieldName, identifier));
+        assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        var result = tree(response);
+        assertThat(result.at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(result.at("/data/challenge/channel").asText()).isEqualTo(channel);
+        String token = result.at("/data/challenge/mfaToken").asText();
+        assertThat(token).matches("[A-Za-z0-9_-]{43}");
+        assertThat(challenges.find(token)).isEmpty();
+        assertThat(verifyOtp(token, "012345").getResponse().getStatus()).isEqualTo(401);
+        assertThat(field(auditEvent("otp_request_accepted"), "reason")).isEqualTo("password_verification_required");
+        assertThat(sessionRepository.count()).isZero();
+        verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void enablingTwoFactorInvalidatesOutstandingPasswordlessAndLegacyChallenges(boolean legacy) throws Exception {
+        captureAuditLogs();
+        var challenge = startOtp();
+        if (legacy) redis.opsForHash().delete("auth:otp:{login}:challenge:" + challenge.token(), "passwordVerified");
+        assertThat(challenges.find(challenge.token()).orElseThrow().passwordVerified()).isFalse();
+        setUser(twoFactorAccount());
+
+        assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
+        assertThat(field(auditEvent("otp_rejected"), "reason")).isEqualTo("password_verification_required");
+        assertThat(challenges.find(challenge.token()).orElseThrow().state()).isEqualTo("CLOSED");
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(refreshRepository.count()).isZero();
+        assertNoCredentialLogs(challenge.token(), challenge.code(), PASSWORD_HASH, user.email());
+    }
+
+    @Test
+    void legacyPasswordlessChallengeStillWorksForAnAccountWithoutTwoFactor() throws Exception {
+        var challenge = startOtp();
+        redis.opsForHash().delete("auth:otp:{login}:challenge:" + challenge.token(), "passwordVerified");
+        assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(200);
+        assertThat(sessionRepository.count()).isEqualTo(1);
+    }
+
     @Test
     void eachRefreshTokenKeepsItsIssuingClientInfoAcrossRotations() {
         var first = createSession();
@@ -345,6 +534,7 @@ class LoginFlowIntegrationTest {
                     assertThat(token.getUserAgent()).isEqualTo(CLIENT.userAgent());
                     assertThat(token.getDeviceId()).isEqualTo(CLIENT.deviceId());
                     assertThat(token.getConsumedAt()).isNotNull();
+                    assertThat(token.isActive()).isFalse();
                 });
         assertThat(refreshRepository.findByTokenHash(tokens.hash(next.refreshToken())).orElseThrow())
                 .satisfies(token -> {
@@ -352,6 +542,7 @@ class LoginFlowIntegrationTest {
                     assertThat(token.getUserAgent()).isEqualTo(nextClient.userAgent());
                     assertThat(token.getDeviceId()).isEqualTo(nextClient.deviceId());
                     assertThat(token.getConsumedAt()).isNotNull();
+                    assertThat(token.isActive()).isFalse();
                 });
         assertThat(refreshRepository.findByTokenHash(tokens.hash(last.refreshToken())).orElseThrow())
                 .satisfies(token -> {
@@ -359,6 +550,7 @@ class LoginFlowIntegrationTest {
                     assertThat(token.getUserAgent()).isNull();
                     assertThat(token.getDeviceId()).isNull();
                     assertThat(token.getConsumedAt()).isNull();
+                    assertThat(token.isActive()).isTrue();
                 });
         assertThat(refreshRepository.findAll()).hasSize(3)
                 .allSatisfy(token -> assertThat(token.getSession().getId()).isEqualTo(session.getId()));
@@ -401,6 +593,8 @@ class LoginFlowIntegrationTest {
         var next = tree(rotated).path("data");
         assertThat(next.path("refreshToken").asText()).isNotEqualTo(pair.refreshToken());
         assertThat(refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow().getConsumedAt()).isNotNull();
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow().isActive()).isFalse();
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(next.path("refreshToken").asText())).orElseThrow().isActive()).isTrue();
         assertThat(call("/refresh", Map.of("refreshToken", pair.refreshToken())).getResponse().getStatus()).isEqualTo(401);
         assertThat(call("/refresh", Map.of("refreshToken", next.path("refreshToken").asText())).getResponse().getStatus()).isEqualTo(401);
         assertThat(sessionRepository.findAll().getFirst().getRevokedReason()).isEqualTo("REFRESH_REUSE");
@@ -462,17 +656,43 @@ class LoginFlowIntegrationTest {
         var result = call("/refresh", Map.of("refreshToken", first.refreshToken()));
         assertThat(result.getResponse().getStatus()).isEqualTo(503);
         assertThat(refreshRepository.findAll().getFirst().getConsumedAt()).isNull();
+        assertThat(refreshRepository.findAll().getFirst().isActive()).isTrue();
         doReturn(user).when(users).getUserById(42);
         assertThat(call("/refresh", Map.of("refreshToken", first.refreshToken())).getResponse().getStatus()).isEqualTo(200);
     }
 
     @Test
-    void userServiceFailureDoesNotConsumeCorrectOtp() throws Exception {
-        var challenge = startOtp();
+    void failedRotationRollsBackDeactivationOfTheOriginalToken() {
+        var first = createSession();
+        // Make the replacement violate the database's strict expiry constraint.
+        properties.setRefreshTokenTtl(Duration.ZERO);
+        try {
+            assertThatThrownBy(() -> sessions.refresh(first.refreshToken(), CLIENT))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        } finally {
+            properties.setRefreshTokenTtl(Duration.ofDays(7));
+        }
+
+        var original = refreshRepository.findByTokenHash(tokens.hash(first.refreshToken())).orElseThrow();
+        assertThat(original.isActive()).isTrue();
+        assertThat(original.getConsumedAt()).isNull();
+        assertThat(original.getRevokedAt()).isNull();
+        assertThat(refreshRepository.count()).isEqualTo(1);
+        sessions.refresh(first.refreshToken(), CLIENT);
+        assertThat(refreshRepository.findById(original.getId()).orElseThrow().isActive()).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void userServiceFailureDoesNotConsumeCorrectOtp(boolean twoFactorEnabled) throws Exception {
+        var current = twoFactorEnabled ? twoFactorAccount() : user;
+        setUser(current);
+        var challenge = twoFactorEnabled ? startPasswordOtp() : startOtp();
         doThrow(new UserClientException(UserClientException.Code.UNAVAILABLE, "GetUserById")).when(users).getUserById(42);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(503);
         assertThat(challenges.find(challenge.token()).orElseThrow().state()).isEqualTo("OPEN");
-        doReturn(user).when(users).getUserById(42);
+        assertThat(challenges.find(challenge.token()).orElseThrow().passwordVerified()).isEqualTo(twoFactorEnabled);
+        doReturn(current).when(users).getUserById(42);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(200);
     }
 
@@ -493,7 +713,7 @@ class LoginFlowIntegrationTest {
         // At the exact boundary, the strict cutoff must leave these families untouched.
         now.updateAndGet(value -> value.plus(Duration.ofDays(37)));
         cleanup.cleanup();
-        assertThat(refreshRepository.findAll()).filteredOn(t -> !t.isRevoked()).hasSize(2)
+        assertThat(refreshRepository.findAll()).filteredOn(t -> t.getRevokedAt() == null).hasSize(2)
                 .allSatisfy(t -> assertThat(t.getRevokedAt()).isNull());
         now.updateAndGet(value -> value.plusSeconds(1));
         var active = createSession();
@@ -506,7 +726,7 @@ class LoginFlowIntegrationTest {
                 .extracting(s -> s.getRevokedReason()).containsExactlyInAnyOrder("LOGOUT", "EXPIRED_CLEANUP");
         assertThat(sessionRepository.findAll()).filteredOn(s -> "LOGOUT".equals(s.getRevokedReason()))
                 .allSatisfy(s -> assertThat(s.getRevokedAt()).isEqualTo(logoutTime));
-        assertThat(refreshRepository.findAll()).filteredOn(t -> t.isRevoked()).hasSize(3)
+        assertThat(refreshRepository.findAll()).filteredOn(t -> t.getRevokedAt() != null).hasSize(3)
                 .allSatisfy(t -> assertThat(t.getRevokedAt()).isEqualTo(
                         t.getTokenHash().equals(tokens.hash(loggedOut.refreshToken())) ? logoutTime : revokedAt));
         assertThat(refreshRepository.findAll()).filteredOn(t -> t.getConsumedAt() != null)
@@ -518,7 +738,7 @@ class LoginFlowIntegrationTest {
         assertThat(sessionRepository.count()).isEqualTo(3);
         assertThat(sessionRepository.findAll()).filteredOn(s -> s.isRevoked()).hasSize(2);
         assertThat(refreshRepository.count()).isEqualTo(5);
-        assertThat(refreshRepository.findAll()).filteredOn(t -> t.isRevoked()).hasSize(3)
+        assertThat(refreshRepository.findAll()).filteredOn(t -> t.getRevokedAt() != null).hasSize(3)
                 .allSatisfy(t -> assertThat(t.getRevokedAt()).isEqualTo(
                         t.getTokenHash().equals(tokens.hash(loggedOut.refreshToken())) ? logoutTime : revokedAt));
     }
@@ -549,7 +769,51 @@ class LoginFlowIntegrationTest {
         assertThatThrownBy(() -> sessions.refresh(pair.refreshToken(), CLIENT)).isInstanceOf(AuthException.class);
         verify(users, never()).getUserById(anyLong());
         assertThat(refreshRepository.findById(token.getId()).orElseThrow().getConsumedAt()).isNull();
+        assertThat(refreshRepository.findById(token.getId()).orElseThrow().isActive()).isFalse();
         assertThat(refreshRepository.count()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"TOKEN_EXPIRED", "SESSION_EXPIRED", "SESSION_FLAG", "SESSION_TIMESTAMP",
+            "CONSUMED", "TOKEN_TIMESTAMP"})
+    void backgroundTaskDeactivatesUnusableTokensWithoutARefreshRequest(String reason) throws Exception {
+        var pair = createSession();
+        var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
+        var session = sessionRepository.findAll().getFirst();
+        switch (reason) {
+            case "TOKEN_EXPIRED" -> now.set(token.getExpiresAt());
+            case "SESSION_EXPIRED" -> now.set(session.getExpiresAt());
+            case "SESSION_FLAG" -> setRevocationState("auth_sessions", session.getId(), true);
+            case "SESSION_TIMESTAMP" -> setRevocationState("auth_sessions", session.getId(), false);
+            case "TOKEN_TIMESTAMP" -> setRevocationState("refresh_tokens", token.getId(), false);
+            case "CONSUMED" -> {
+                try (var connection = dataSource.getConnection();
+                     var statement = connection.prepareStatement("UPDATE refresh_tokens SET consumed_at = ? WHERE id = ?")) {
+                    statement.setTimestamp(1, java.sql.Timestamp.from(now.get()));
+                    statement.setObject(2, token.getId());
+                    assertThat(statement.executeUpdate()).isEqualTo(1);
+                }
+            }
+            default -> throw new AssertionError(reason);
+        }
+        // The stored flag is intentionally stale until the task reconciles it.
+        assertThat(refreshRepository.findById(token.getId()).orElseThrow().isActive()).isTrue();
+        var control = createSession();
+
+        cleanup.deactivateUnusableRefreshTokens();
+        var inactive = refreshRepository.findById(token.getId()).orElseThrow();
+        assertThat(inactive.isActive()).isFalse();
+        assertThat(refreshRepository.findByTokenHash(tokens.hash(control.refreshToken())).orElseThrow().isActive()).isTrue();
+        cleanup.deactivateUnusableRefreshTokens();
+        var repeated = refreshRepository.findById(token.getId()).orElseThrow();
+        assertThat(repeated.isActive()).isFalse();
+        assertThat(repeated.getConsumedAt()).isEqualTo(inactive.getConsumedAt());
+        assertThat(repeated.getRevokedAt()).isEqualTo(inactive.getRevokedAt());
+        assertThat(refreshRepository.count()).isEqualTo(2);
+        if (reason.equals("TOKEN_EXPIRED")) {
+            assertThatThrownBy(() -> sessions.refresh(pair.refreshToken(), CLIENT)).isInstanceOf(AuthException.class);
+            assertThat(sessionRepository.findById(session.getId()).orElseThrow().getRevokedReason()).isEqualTo("REFRESH_EXPIRED");
+        }
     }
 
     @ParameterizedTest
@@ -559,7 +823,7 @@ class LoginFlowIntegrationTest {
         var jwt = decoder.decode(pair.accessToken());
         var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
         var session = sessionRepository.findAll().getFirst();
-        assertThat(token.isRevoked()).isFalse();
+        assertThat(token.isActive()).isTrue();
         assertThat(session.isRevoked()).isFalse();
         now.set(sessionExpiry ? session.getExpiresAt() : token.getExpiresAt());
         if (sessionExpiry) assertThat(sessions.isAccessSessionActive(jwt)).isFalse();
@@ -694,8 +958,7 @@ class LoginFlowIntegrationTest {
     @Test
     void changingOtpDestinationInvalidatesTheOldCodeEvenWithoutAPasswordChange() throws Exception {
         var challenge = startOtp();
-        var changed = new UserAccount(42, List.of("USER"), "changed@example.com", user.phone(), user.status(),
-                true, true, 3, false);
+        var changed = user.toBuilder().email("changed@example.com").build();
         doReturn(changed).when(users).getUserById(42);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
         assertThat(sessionRepository.count()).isZero();
@@ -704,7 +967,8 @@ class LoginFlowIntegrationTest {
     @Test
     void upstreamIdentityMismatchCannotMintTokensForAnotherUser() throws Exception {
         var first = createSession();
-        var wrongUser = new UserAccount(99, List.of("ADMIN"), "other@example.com", null, user.status(), true, false, 3, false);
+        var wrongUser = user.toBuilder().userId(99).roles(List.of("ADMIN"))
+                .email("other@example.com").phone(null).phoneVerified(false).build();
         doReturn(wrongUser).when(users).getUserById(42);
         assertThat(call("/refresh", Map.of("refreshToken", first.refreshToken())).getResponse().getStatus()).isEqualTo(503);
         assertThat(refreshRepository.findAll().getFirst().getConsumedAt()).isNull();
@@ -902,7 +1166,7 @@ class LoginFlowIntegrationTest {
             assertThat(session.getRevokedAt()).isNotNull();
         });
         assertThat(refreshRepository.findAll()).isNotEmpty().allSatisfy(token -> {
-            assertThat(token.isRevoked()).isTrue();
+            assertThat(token.isActive()).isFalse();
             assertThat(token.getRevokedAt()).isNotNull();
         });
     }
@@ -910,8 +1174,9 @@ class LoginFlowIntegrationTest {
     private void setRevocationState(String table, java.util.UUID id, boolean flagOnly) throws Exception {
         // Intentionally simulate independent revocation signals to ensure validation fails closed.
         try (var connection = dataSource.getConnection();
-             var statement = connection.prepareStatement("UPDATE " + table + " SET is_revoked = ?, revoked_at = ? WHERE id = ?")) {
-            statement.setBoolean(1, flagOnly);
+             var statement = connection.prepareStatement("UPDATE " + table + " SET "
+                     + (table.equals("refresh_tokens") ? "is_active" : "is_revoked") + " = ?, revoked_at = ? WHERE id = ?")) {
+            statement.setBoolean(1, table.equals("refresh_tokens") ? !flagOnly : flagOnly);
             statement.setTimestamp(2, flagOnly ? null : java.sql.Timestamp.from(now.get()));
             statement.setObject(3, id);
             assertThat(statement.executeUpdate()).isEqualTo(1);
@@ -919,7 +1184,22 @@ class LoginFlowIntegrationTest {
     }
 
     private UserAccount account(UserAccount.AccountStatus status, long version, boolean expired, boolean verified) {
-        return new UserAccount(42, List.of("USER"), "user@example.com", "+989123456789", status, verified, verified, version, expired);
+        return UserAccount.builder()
+                .userId(42)
+                .roles(List.of("USER"))
+                .email("user@example.com")
+                .phone("+989123456789")
+                .status(status)
+                .emailVerified(verified)
+                .phoneVerified(verified)
+                .credentialVersion(version)
+                .credentialsExpired(expired)
+                .twoFactorEnabled(false)
+                .build();
+    }
+
+    private UserAccount twoFactorAccount() {
+        return user.toBuilder().twoFactorEnabled(true).build();
     }
 
     private void setUser(UserAccount value) {
@@ -952,6 +1232,15 @@ class LoginFlowIntegrationTest {
     private Challenge startOtp() throws Exception {
         var response = call("/login-otp-email", Map.of("email", "user@example.com"));
         assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        var code = ArgumentCaptor.forClass(String.class);
+        verify(notifications, atLeastOnce()).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
+        return new Challenge(tree(response).at("/data/challenge/mfaToken").asText(), code.getAllValues().getLast());
+    }
+
+    private Challenge startPasswordOtp() throws Exception {
+        var response = password("user@example.com", "correct-password");
+        assertThat(response.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(response).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
         var code = ArgumentCaptor.forClass(String.class);
         verify(notifications, atLeastOnce()).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
         return new Challenge(tree(response).at("/data/challenge/mfaToken").asText(), code.getAllValues().getLast());

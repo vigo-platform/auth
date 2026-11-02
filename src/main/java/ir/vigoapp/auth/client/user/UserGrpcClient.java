@@ -1,12 +1,12 @@
 package ir.vigoapp.auth.client.user;
 
 import io.grpc.StatusRuntimeException;
-import ir.vigoapp.auth.config.ApplicationProperties;
+import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.ChangePasswordCommand;
 import ir.vigoapp.auth.client.user.model.CreateUserCommand;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.client.user.model.UserLoginInfo;
-import ir.vigoapp.auth.client.user.exception.UserClientException;
+import ir.vigoapp.auth.config.ApplicationProperties;
 import ir.vigoapp.contracts.user.v1.*;
 import org.springframework.stereotype.Component;
 import org.springframework.util.Assert;
@@ -36,6 +36,21 @@ public class UserGrpcClient {
     public UserLoginInfo getLoginInfoByPhone(String phone) {
         validatePhone(phone);
         String operation = "GetUserLoginInfoByPhone";
+        try {
+            return loginInfoByPhone(phone, operation);
+        } catch (UserClientException exception) {
+            // Older User services store Iranian mobiles as 09... and look them up literally.
+            // Only try this equivalent identifier after a definitive lookup/format rejection.
+            if (!phone.matches("\\+989[0-9]{9}")
+                    || (exception.getCode() != UserClientException.Code.NOT_FOUND
+                    && exception.getCode() != UserClientException.Code.INVALID_ARGUMENT)) {
+                throw exception;
+            }
+            return loginInfoByPhone("0" + phone.substring(3), operation);
+        }
+    }
+
+    private UserLoginInfo loginInfoByPhone(String phone, String operation) {
         var response = call(operation, s -> s.getUserLoginInfoByPhone(
                 GetUserLoginInfoByPhoneRequest.newBuilder().setPhone(phone).build()));
         return loginInfo(response, operation);
@@ -131,7 +146,10 @@ public class UserGrpcClient {
 
     private static UserLoginInfo loginInfo(UserLoginInfoResponse response, String operation) {
         requireResponse(response.hasUser() && !response.getPasswordHash().isBlank(), operation);
-        return new UserLoginInfo(account(response.getUser(), operation), response.getPasswordHash());
+        return UserLoginInfo.builder()
+                .user(account(response.getUser(), operation))
+                .passwordHash(response.getPasswordHash())
+                .build();
     }
 
     private static UserAccount account(UserAuthInfo response, String operation) {
@@ -143,11 +161,18 @@ public class UserGrpcClient {
             case USER_STATUS_DEACTIVATED -> UserAccount.AccountStatus.DEACTIVATED;
             default -> UserAccount.AccountStatus.UNKNOWN;
         };
-        return new UserAccount(response.getUserId(), response.getRolesList(),
-                response.hasEmail() ? response.getEmail() : null,
-                response.hasPhone() ? response.getPhone() : null, status,
-                response.getEmailVerified(), response.getPhoneVerified(),
-                response.getCredentialVersion(), response.getCredentialsExpired());
+        return UserAccount.builder()
+                .userId(response.getUserId())
+                .roles(response.getRolesList())
+                .email(response.hasEmail() ? response.getEmail() : null)
+                .phone(response.hasPhone() ? response.getPhone() : null)
+                .status(status)
+                .emailVerified(response.getEmailVerified())
+                .phoneVerified(response.getPhoneVerified())
+                .credentialVersion(response.getCredentialVersion())
+                .credentialsExpired(response.getCredentialsExpired())
+                .twoFactorEnabled(response.getTwoFactorEnabled())
+                .build();
     }
 
     private static void requireResponse(boolean valid, String operation) {

@@ -1,4 +1,4 @@
-package ir.vigoapp.auth.config;
+package ir.vigoapp.auth.security.jwt;
 
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;

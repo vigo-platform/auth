@@ -1,7 +1,7 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.security.login;
 
 import ir.vigoapp.auth.client.user.model.UserAccount;
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
 
 public final class AccountEligibility {
     private AccountEligibility() {}

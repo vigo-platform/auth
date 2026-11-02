@@ -1,7 +1,7 @@
-package ir.vigoapp.auth.controller.jwk;
+package ir.vigoapp.auth.controller;
 
 import com.nimbusds.jose.jwk.RSAKey;
-import ir.vigoapp.auth.config.RsaKeyUtils;
+import ir.vigoapp.auth.security.jwt.RsaKeyUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

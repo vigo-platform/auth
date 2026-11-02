@@ -1,7 +1,9 @@
 package ir.vigoapp.auth.dto.login;
 
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
+import lombok.Builder;
 
+@Builder
 public record OtpChallengeResponse(String mfaToken, OtpChannel channel, long expiresIn, long resendAfter) {
     @Override
     public String toString() { return "OtpChallengeResponse[REDACTED]"; }

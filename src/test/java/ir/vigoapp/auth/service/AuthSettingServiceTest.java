@@ -1,18 +1,20 @@
 package ir.vigoapp.auth.service;
 
-import ir.vigoapp.auth.bootstrap.AuthSettingInitializer;
-import ir.vigoapp.auth.config.ApplicationProperties;
-import ir.vigoapp.auth.entity.AuthSetting;
-import ir.vigoapp.auth.entity.OtpChannel;
-import ir.vigoapp.auth.repository.AuthSettingRepository;
-import ir.vigoapp.auth.dto.setting.AuthSettingDto;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import ir.vigoapp.auth.bootstrap.AuthSettingInitializer;
+import ir.vigoapp.auth.config.ApplicationProperties;
+import ir.vigoapp.auth.dto.setting.AuthSettingDto;
+import ir.vigoapp.auth.entity.AuthSetting;
+import ir.vigoapp.auth.model.OtpChannel;
+import ir.vigoapp.auth.repository.AuthSettingRepository;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.dao.DataAccessResourceFailureException;
@@ -23,18 +25,16 @@ import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.slf4j.LoggerFactory;
 
-import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
-import java.util.Optional;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.tuple;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 

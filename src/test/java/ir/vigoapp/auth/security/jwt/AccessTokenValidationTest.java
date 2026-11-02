@@ -1,12 +1,12 @@
-package ir.vigoapp.auth.config;
+package ir.vigoapp.auth.security.jwt;
 
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import ir.vigoapp.auth.client.user.model.UserAccount;
+import ir.vigoapp.auth.config.JwtConfig;
+import ir.vigoapp.auth.config.JwtProperties;
 import ir.vigoapp.auth.entity.AuthSession;
-import ir.vigoapp.auth.security.jwt.AccessTokenService;
-import ir.vigoapp.auth.security.jwt.JwtConfig;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
@@ -44,7 +44,7 @@ class AccessTokenValidationTest {
     void issuedAccessTokenPassesTheActualDecoder() {
         var now = Instant.now();
         var user = new UserAccount(42, List.of("USER", "ADMIN"), "user@example.com", null,
-                UserAccount.AccountStatus.ACTIVE, true, false, 3, false);
+                UserAccount.AccountStatus.ACTIVE, true, false, 3, false, false);
         var session = new AuthSession(user, now, now.plusSeconds(86400));
         ReflectionTestUtils.setField(session, "id", UUID.randomUUID());
         var issued = new AccessTokenService(encoder, properties).issue(user, session, now);

@@ -5,11 +5,13 @@ import ir.vigoapp.auth.client.user.UserGrpcClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
-import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class UserGrpcConfigTest {

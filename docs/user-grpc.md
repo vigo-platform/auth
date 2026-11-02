@@ -1,6 +1,6 @@
 # Auth → User gRPC integration
 
-Inject `ir.vigoapp.auth.client.user.UserGrpcClient` by constructor. It provides all eight RPCs from `users-grpc-contract:3.0.0`. Request/response records have separate files under `client.user.model`; errors use `client.user.exception.UserClientException`. All integration classes live under `client.user`.
+Inject `ir.vigoapp.auth.client.user.UserGrpcClient` by constructor. It provides all eight RPCs from `users-grpc-contract:3.1.0`. Request/response records have separate files under `client.user.model`; errors use `client.user.exception.UserClientException`. All integration classes live under `client.user`.
 
 ## Configuration
 
@@ -28,7 +28,19 @@ A channel and blocking stub are reused. Each RPC gets a fresh deadline. Spring c
 
 ## Application behavior
 
-The client supports login lookup by email/phone/ID, account lookup by ID, email/phone existence checks, account creation and password changes. Missing identifiers map to `null`. Account status, verification flags, credential version and credential expiration are preserved; unknown statuses map to `UNKNOWN` and must never grant access.
+The client supports login lookup by email/phone/ID, account lookup by ID, email/phone existence checks, account creation and password changes. Missing identifiers map to `null`. Account status, verification flags, credential version, credential expiration and `two_factor_enabled` are preserved in `UserAccount`; unknown statuses map to `UNKNOWN` and must never grant access.
+
+Auth normalizes phone login identifiers to E.164 for lookup and rate-limit keys.
+For Iranian mobiles, `GetUserLoginInfoByPhone` first requests `+989…`; if User
+returns `NOT_FOUND` or `INVALID_ARGUMENT`, the adapter makes one lookup using the
+equivalent `09…` form for compatibility with User deployments storing local
+numbers. Transport, timeout and authorization failures never trigger this
+fallback, and mutations are not retried. A returned phone is compared after
+normalization, so `09111111111` and `+989111111111` identify the same account;
+a different or malformed returned identifier is still rejected. The returned
+contact format is preserved for OTP delivery and destination checks.
+
+Contract 3.1.0 adds `UserAuthInfo.two_factor_enabled` (field 10), mapped to `UserAccount.twoFactorEnabled()`. Auth requires password followed by OTP when this flag is true, even if `AUTH_PASSWORD_OTP_REQUIRED=false`. Verified email/phone flags alone do not enable two-factor authentication. Deploy User support first and populate the flag in every account-bearing response: this proto3 boolean has no presence tracking and defaults to `false` when omitted. The contract exposes no enrollment/mutation RPC for this flag; User remains its owner. See [login rules](login.md#authentication-rules) for challenge handling and passwordless restrictions.
 
 Auth owns password verification, account eligibility, JWT issuance, authorization of password changes/resets, recovery challenges and password hashing. Deploy User's expiration calculation before relying on `credentialsExpired`: proto3 cannot distinguish an omitted boolean from `false`.
 
@@ -44,4 +56,4 @@ Automatic retries and resolver-provided service configs are disabled. Contract 3
 ./mvnw -Dtest=UserGrpcConfigTest,UserGrpcClientTest,SecurityHandlersTest test
 ```
 
-Tests cover property binding and validation, channel cleanup, all eight RPCs over the configured plaintext channel, deadline renewal, safe errors and mutation payload preservation. Loopback sockets and synthetic data are used.
+Tests cover property binding and validation, channel cleanup, all eight RPCs over the configured plaintext channel, both two-factor flag values in all five account-bearing RPCs, the omitted-flag default, deadline renewal, safe errors and mutation payload preservation. Loopback sockets and synthetic data are used.

@@ -1,9 +1,9 @@
 package ir.vigoapp.auth.service;
 
 import ir.vigoapp.auth.config.ApplicationProperties;
+import ir.vigoapp.auth.dto.setting.AuthSettingDto;
 import ir.vigoapp.auth.entity.AuthSetting;
 import ir.vigoapp.auth.repository.AuthSettingRepository;
-import ir.vigoapp.auth.dto.setting.AuthSettingDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;

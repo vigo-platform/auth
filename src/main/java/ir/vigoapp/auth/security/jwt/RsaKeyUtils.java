@@ -1,4 +1,7 @@
-package ir.vigoapp.auth.config;
+package ir.vigoapp.auth.security.jwt;
+
+import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -12,10 +15,10 @@ import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
-import org.springframework.core.io.DefaultResourceLoader;
-import org.springframework.core.io.Resource;
 
-public class RsaKeyUtils {
+public final class RsaKeyUtils {
+
+    private RsaKeyUtils() {}
 
     public static RSAPublicKey readPublicKey(String locationOrPem) {
         try {

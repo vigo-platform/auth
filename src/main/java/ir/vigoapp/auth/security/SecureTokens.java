@@ -1,10 +1,10 @@
 package ir.vigoapp.auth.security;
 
 import ir.vigoapp.auth.config.AuthProperties;
-import org.springframework.stereotype.Component;
-
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import org.springframework.stereotype.Component;
+
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;

@@ -1,7 +1,7 @@
 package ir.vigoapp.auth.dto.setting;
 
 import ir.vigoapp.auth.entity.AuthSetting;
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
 import lombok.Builder;
 
 import java.time.Instant;

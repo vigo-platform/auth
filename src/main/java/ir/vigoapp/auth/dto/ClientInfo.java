@@ -1,7 +1,9 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.dto;
 
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.Builder;
 
+@Builder
 public record ClientInfo(String ipAddress, String userAgent, String deviceId) {
     public ClientInfo {
         ipAddress = limit(ipAddress, 64);
@@ -11,7 +13,11 @@ public record ClientInfo(String ipAddress, String userAgent, String deviceId) {
 
     public static ClientInfo from(HttpServletRequest request) {
         // Forwarded headers are untrusted. A trusted ingress may configure the servlet remote address.
-        return new ClientInfo(request.getRemoteAddr(), request.getHeader("User-Agent"), request.getHeader("X-Device-Id"));
+        return ClientInfo.builder()
+                .ipAddress(request.getRemoteAddr())
+                .userAgent(request.getHeader("User-Agent"))
+                .deviceId(request.getHeader("X-Device-Id"))
+                .build();
     }
 
     private static String limit(String value, int max) {

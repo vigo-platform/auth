@@ -1,4 +1,4 @@
-package ir.vigoapp.auth.service.login;
+package ir.vigoapp.auth.security.login;
 
 import ir.vigoapp.auth.exception.AuthException;
 import org.springframework.http.HttpStatus;
@@ -7,6 +7,15 @@ import java.util.Locale;
 
 public final class LoginIdentifier {
     private LoginIdentifier() {}
+
+    /** Compare a User response with the canonical lookup identity without trusting its format. */
+    public static boolean matches(String normalizedIdentifier, String returnedIdentifier) {
+        try {
+            return normalizedIdentifier.equals(normalize(returnedIdentifier));
+        } catch (AuthException invalidIdentifier) {
+            return false;
+        }
+    }
 
     public static String normalize(String input) {
         String value = input == null ? "" : input.strip();

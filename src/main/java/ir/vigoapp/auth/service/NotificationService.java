@@ -1,6 +1,6 @@
-package ir.vigoapp.auth.service.notification;
+package ir.vigoapp.auth.service;
 
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
 import org.springframework.stereotype.Service;
 
 @Service

@@ -1,13 +1,17 @@
-package ir.vigoapp.auth.controller.login;
+package ir.vigoapp.auth.controller;
 
 import ir.vigoapp.auth.dto.ApiResponse;
-import ir.vigoapp.auth.dto.login.*;
+import ir.vigoapp.auth.dto.ClientInfo;
+import ir.vigoapp.auth.dto.login.EmailLoginRequest;
+import ir.vigoapp.auth.dto.login.LoginResponse;
+import ir.vigoapp.auth.dto.login.PasswordLoginRequest;
+import ir.vigoapp.auth.dto.login.PhoneLoginRequest;
+import ir.vigoapp.auth.dto.login.VerifyLoginRequest;
 import ir.vigoapp.auth.dto.token.RefreshRequest;
 import ir.vigoapp.auth.dto.token.TokenResponse;
-import ir.vigoapp.auth.entity.OtpChannel;
+import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.service.LoginService;
 import ir.vigoapp.auth.service.SessionService;
-import ir.vigoapp.auth.service.login.ClientInfo;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;

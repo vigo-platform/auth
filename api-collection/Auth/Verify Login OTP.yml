@@ -2,11 +2,21 @@ info:
   name: Verify Login OTP
   type: http
   seq: 7
+
 http:
   method: POST
   url: "{{baseUrl}}/api/v1/auth/verify"
-  auth: none
   body:
     type: json
     data: |-
-      {"mfaToken":"{{mfaToken}}","otp":"012345"}
+      {
+        "mfaToken":"RrpWoPKp2I83O_GE64jRPMl_w4ZzwnLdMJo8jtn3lX8",
+        "otp":"395356"
+      }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

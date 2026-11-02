@@ -10,7 +10,6 @@ import ir.vigoapp.auth.dto.setting.AuthSettingDto;
 import ir.vigoapp.auth.entity.AuthSetting;
 import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.repository.AuthSettingRepository;
-import ir.vigoapp.auth.scheduling.AuthSettingRefresh;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -279,13 +278,12 @@ class AuthSettingServiceTest {
     }
 
     @Test
-    void scheduledRefreshKeepsLastSnapshotDuringAnOutageAndRecoversWithoutInserting() {
+    void explicitReloadKeepsLastSnapshotDuringAnOutageAndRecoversWithoutInserting() {
         initializeExisting();
         var previous = service.getCurrent();
-        var refresh = new AuthSettingRefresh(service);
         when(repository.findFirstByOrderByVersionDescIdDesc())
                 .thenThrow(new DataAccessResourceFailureException("simulated outage"));
-        refresh.refresh();
+        assertThatThrownBy(service::reload).isInstanceOf(DataAccessResourceFailureException.class);
         assertThat(service.getCurrent()).isSameAs(previous);
 
         var next = setting(2);
@@ -294,10 +292,10 @@ class AuthSettingServiceTest {
         next.setDefaultOtpChannel(OtpChannel.SMS);
         next.setSmsNotificationEnabled(true);
         doReturn(Optional.of(next)).when(repository).findFirstByOrderByVersionDescIdDesc();
-        refresh.refresh();
+        service.reload();
         assertThat(service.getCurrent()).isEqualTo(AuthSettingDto.from(next));
         var active = service.getCurrent();
-        refresh.refresh();
+        service.reload();
         assertThat(service.getCurrent()).isSameAs(active);
         assertThat(events("reloaded")).hasSize(1);
         verify(repository, never()).saveAndFlush(any());

@@ -9,12 +9,9 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import lombok.Getter;
 import lombok.Setter;
-import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.validation.annotation.Validated;
-
-import java.time.Duration;
 
 @Getter
 @Setter
@@ -36,10 +33,6 @@ public class ApplicationProperties {
     @Valid
     @NotNull
     private AuthDefaults authDefaults = new AuthDefaults();
-
-    @NotNull
-    @DurationMin(seconds = 1)
-    private Duration authSettingsRefreshInterval = Duration.ofSeconds(5);
 
     /**
      * Initial auth settings used only when no settings record exists.

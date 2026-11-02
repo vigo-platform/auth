@@ -83,12 +83,12 @@ across different rows.
 The cache changes only after a successful commit. Rollback leaves the previous
 snapshot intact. Older callbacks cannot replace newer revisions. `reload()` loads
 the latest database revision without creating one if none exists.
-`AuthSettingRefresh` polls `reload()` after each `app.auth-settings-refresh-interval`
-(environment `AUTH_SETTINGS_REFRESH_INTERVAL`, default `5s`, minimum `1s`). Changes
-made by other application instances or directly in the database become visible on
-the next successful poll. A failed poll keeps the last committed snapshot and logs
-the failure; it retries on the next run. Unchanged snapshots do not emit repeated
-activation logs. Service-local `update()` still publishes immediately after commit.
+There is no scheduled polling or database change listener. Changes made directly
+in the database or by another application instance remain invisible to this cache
+until an explicit `reload()` or application restart. A failed reload preserves the
+last committed snapshot and propagates the error to its caller. Unchanged snapshots
+do not emit repeated activation logs. Service-local `update()` still publishes
+immediately after commit.
 History is append-only through this service; deleting or rewriting revisions is not
 supported. Restoring old settings means inserting a new revision with the old values.
 
@@ -128,7 +128,7 @@ is not used to select the current revision or trigger cache reload.
 `AuthSettingServiceTest` exercises real Spring transaction interception and commit/
 rollback handling with mocked JDBC and repository interfaces, without a database or
 Flyway. It covers startup defaults, preservation of history, increasing versions,
-stale edits, cache visibility, reload, scheduled refresh recovery, unchanged snapshots,
+stale edits, cache visibility, explicit reload recovery, unchanged snapshots,
 and failures.
 
 `AuthPolicyServiceTest` checks every combination of the three channel switches,

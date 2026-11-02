@@ -31,7 +31,6 @@ spring:
     baseline-on-migrate: true
 
 app:
-  auth-settings-refresh-interval: ${AUTH_SETTINGS_REFRESH_INTERVAL:5s}
   public-paths:
     - "/api/v1/auth/settings"
     - "/api/v1/auth/register"

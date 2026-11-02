@@ -41,15 +41,4 @@ class AuthDefaultsPropertiesTest {
                 .run(context -> assertThat(context).hasFailed());
     }
 
-    @Test
-    void settingsRefreshIntervalIsBoundAndMustBePositive() {
-        runner.withPropertyValues("app.auth-defaults.default-otp-channel=EMAIL", "app.auth-settings-refresh-interval=2s")
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(ApplicationProperties.class).getAuthSettingsRefreshInterval())
-                            .isEqualTo(java.time.Duration.ofSeconds(2));
-                });
-        runner.withPropertyValues("app.auth-defaults.default-otp-channel=EMAIL", "app.auth-settings-refresh-interval=0s")
-                .run(context -> assertThat(context).hasFailed());
-    }
 }

@@ -47,7 +47,7 @@ public class SecureTokens {
         }
     }
 
-    /** Domain separation protects identifiers and low-entropy OTPs with the server secret. */
+    /** Used only to anonymize identifiers in audit logs, never for Redis keys or values. */
     public String fingerprint(String purpose, String value) {
         try {
             var mac = Mac.getInstance("HmacSHA256");
@@ -56,11 +56,5 @@ public class SecureTokens {
         } catch (GeneralSecurityException exception) {
             throw new IllegalStateException("HMAC-SHA256 is unavailable", exception);
         }
-    }
-
-    public boolean matchesOtp(String tokenHash, String code, String expectedHash) {
-        return expectedHash != null && MessageDigest.isEqual(
-                fingerprint("login-otp", tokenHash + ":" + code).getBytes(StandardCharsets.US_ASCII),
-                expectedHash.getBytes(StandardCharsets.US_ASCII));
     }
 }

@@ -9,18 +9,17 @@ import static org.assertj.core.api.Assertions.*;
 
 class SecureTokensTest {
     @Test
-    void tokensAreRandomAndOtpHashesAreBoundToTheirChallenge() {
+    void tokensStayRandomAndDatabaseHashesAndAuditFingerprintsRemainAvailable() {
         var properties = new AuthProperties();
         properties.setOtpSecret(Base64.getEncoder().encodeToString(new byte[32]));
         var tokens = new SecureTokens(properties);
         String token = tokens.randomToken();
         assertThat(token).matches("[A-Za-z0-9_-]{43}").isNotEqualTo(tokens.randomToken());
         assertThat(tokens.otp()).matches("[0-9]{6}");
-        String hash = tokens.hash(token);
-        String codeHash = tokens.fingerprint("login-otp", hash + ":123456");
-        assertThat(tokens.matchesOtp(hash, "123456", codeHash)).isTrue();
-        assertThat(tokens.matchesOtp(tokens.hash(tokens.randomToken()), "123456", codeHash)).isFalse();
-        assertThat(tokens.matchesOtp(hash, "654321", codeHash)).isFalse();
+        assertThat(tokens.hash(token)).matches("[0-9a-f]{64}").isNotEqualTo(token);
+        assertThat(tokens.hash("abc")).isEqualTo("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assertThat(tokens.fingerprint("identifier", "user@example.com"))
+                .matches("[0-9a-f]{64}").isNotEqualTo(tokens.fingerprint("account", "user@example.com"));
     }
 
     @Test

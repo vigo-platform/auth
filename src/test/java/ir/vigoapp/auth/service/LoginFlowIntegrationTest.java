@@ -195,16 +195,33 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void otpCanBeUsedOnlyOnceAndDoesNotExposeTheCodeOrHash() throws Exception {
+    void otpCanBeUsedOnlyOnceAndStoresReadableValuesInRedis() throws Exception {
         var challenge = startOtp();
         var result = verifyOtp(challenge.token(), challenge.code());
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
         assertThat(refreshRepository.count()).isEqualTo(1);
-        var stored = challenges.find(tokens.hash(challenge.token())).orElseThrow();
-        assertThat(stored.codeHash()).isNotEqualTo(challenge.code());
-        assertThat(stored.tokenHash()).isNotEqualTo(challenge.token());
+        var stored = challenges.find(challenge.token()).orElseThrow();
+        assertThat(stored.code()).isEqualTo(challenge.code());
+        assertThat(stored.token()).isEqualTo(challenge.token());
         assertThat(stored.state()).isEqualTo("CLOSED");
+    }
+
+    @Test
+    void redisKeysAndOtpValuesAreReadableAndNamespaced() throws Exception {
+        var challenge = startOtp();
+        String challengeKey = "auth:otp:{login}:challenge:" + challenge.token();
+        assertThat(redis.keys("auth:*")).containsExactlyInAnyOrder(
+                "auth:ip:127.0.0.1", "auth:otp-cooldown:identifier:user@example.com",
+                "auth:otp-cooldown:account:42", "auth:otp:{login}:latest:account:42", challengeKey);
+        assertThat(redis.opsForValue().get("auth:otp:{login}:latest:account:42")).isEqualTo(challengeKey);
+        assertThat(redis.<String, String>opsForHash().entries(challengeKey))
+                .containsEntry("identifierKey", "identifier:user@example.com")
+                .containsEntry("destination", "user@example.com")
+                .containsEntry("userId", "42").containsEntry("credentialVersion", "3")
+                .containsEntry("code", challenge.code()).containsEntry("channel", "EMAIL")
+                .doesNotContainKeys("codeHash", "destinationKey", "tokenHash");
+        assertThat(challenges.find(challenge.token()).orElseThrow().toString()).doesNotContain(challenge.code(), challenge.token());
     }
 
     @Test
@@ -213,12 +230,12 @@ class LoginFlowIntegrationTest {
         String wrong = challenge.code().equals("000000") ? "000001" : "000000";
         for (int i = 1; i <= 2; i++) {
             assertThat(verifyOtp(challenge.token(), wrong).getResponse().getStatus()).isEqualTo(401);
-            var stored = challenges.find(tokens.hash(challenge.token())).orElseThrow();
+            var stored = challenges.find(challenge.token()).orElseThrow();
             assertThat(stored.failedAttempts()).isEqualTo(i);
             assertThat(stored.state()).isEqualTo("OPEN");
         }
         assertThat(verifyOtp(challenge.token(), wrong).getResponse().getStatus()).isEqualTo(401);
-        assertThat(challenges.find(tokens.hash(challenge.token()))).isEmpty();
+        assertThat(challenges.find(challenge.token())).isEmpty();
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
         assertThat(sessionRepository.count()).isZero();
     }
@@ -233,7 +250,7 @@ class LoginFlowIntegrationTest {
             return "SUCCESS";
         });
         assertThat(results).containsOnly("INVALID_OTP");
-        assertThat(challenges.find(tokens.hash(challenge.token()))).isEmpty();
+        assertThat(challenges.find(challenge.token())).isEmpty();
         assertThat(sessionRepository.count()).isZero();
     }
 
@@ -420,7 +437,7 @@ class LoginFlowIntegrationTest {
         var challenge = startOtp();
         doThrow(new UserClientException(UserClientException.Code.UNAVAILABLE, "GetUserById")).when(users).getUserById(42);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(503);
-        assertThat(challenges.find(tokens.hash(challenge.token())).orElseThrow().state()).isEqualTo("OPEN");
+        assertThat(challenges.find(challenge.token()).orElseThrow().state()).isEqualTo("OPEN");
         doReturn(user).when(users).getUserById(42);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(200);
     }
@@ -597,6 +614,40 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
+    void ipLimitIsAtomicAndBlockedRequestsDoNotExtendItsWindow() throws Exception {
+        properties.setIpMaxRequests(1);
+        var results = race(() -> {
+            protection.checkIp(CLIENT);
+            return "SUCCESS";
+        });
+        assertThat(results).containsExactlyInAnyOrder("SUCCESS", "RATE_LIMITED");
+        String key = "auth:ip:127.0.0.1";
+        assertThat(redis.opsForValue().get(key)).isEqualTo("2");
+        assertThat(redis.getExpire(key)).isPositive().isLessThanOrEqualTo(60L);
+        redis.expire(key, Duration.ofSeconds(10));
+        assertThatThrownBy(() -> protection.checkIp(CLIENT)).isInstanceOf(AuthException.class);
+        assertThat(redis.getExpire(key)).isPositive().isLessThanOrEqualTo(10L);
+        protection.checkIp(new ClientInfo("2001:db8::1", null, null));
+        assertThat(redis.opsForValue().get("auth:ip:2001:db8::1")).isEqualTo("1");
+        redis.expire(key, Duration.ZERO);
+        protection.checkIp(CLIENT);
+        assertThat(redis.opsForValue().get(key)).isEqualTo("1");
+    }
+
+    @Test
+    void readableAccountFailureKeysStillShareLockoutAcrossEmailAndPhone() throws Exception {
+        for (int i = 0; i < properties.getMaxFailedAttempts(); i++) {
+            assertThat(password("USER@EXAMPLE.COM", "wrong-password").getResponse().getStatus()).isEqualTo(401);
+        }
+        assertThat(redis.opsForHash().get("auth:failure:identifier:user@example.com", "failures")).isEqualTo("5");
+        assertThat(redis.opsForHash().get("auth:failure:account:42", "failures")).isEqualTo("5");
+        var locked = password("09123456789", "correct-password");
+        assertThat(locked.getResponse().getStatus()).isEqualTo(429);
+        assertThat(tree(locked).path("code").asText()).isEqualTo("LOGIN_TEMPORARILY_LOCKED");
+        assertThat(sessionRepository.count()).isZero();
+    }
+
+    @Test
     void validationAndMalformedJsonDoNotEchoSecrets() throws Exception {
         mvc.perform(post("/api/v1/auth/login-password").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"identifier\":\"user@example.com\",\"password\":\"" + "s".repeat(100) + "\"}"))
@@ -678,7 +729,7 @@ class LoginFlowIntegrationTest {
     @Test
     void redisExpiryRemovesTheChallengeWithoutDatabaseCleanup() throws Exception {
         var challenge = startOtp();
-        String key = "auth:otp:{login}:challenge:" + tokens.hash(challenge.token());
+        String key = "auth:otp:{login}:challenge:" + challenge.token();
         assertThat(redis.getExpire(key)).isPositive().isLessThanOrEqualTo(300L);
         redis.expire(key, Duration.ZERO);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
@@ -688,22 +739,22 @@ class LoginFlowIntegrationTest {
     @Test
     void claimCannotBeReleasedByAnotherVerifierAndDoesNotExtendExpiry() throws Exception {
         var challenge = startOtp();
-        String hash = tokens.hash(challenge.token());
-        String key = "auth:otp:{login}:challenge:" + hash;
+        String token = challenge.token();
+        String key = "auth:otp:{login}:challenge:" + token;
         long ttl = redis.getExpire(key);
-        assertThat(challenges.claim(hash, "first-owner")).isTrue();
-        challenges.complete(hash, "other-owner", false);
-        assertThat(challenges.find(hash).orElseThrow().state()).isEqualTo("CLAIMED");
+        assertThat(challenges.claim(token, "first-owner")).isTrue();
+        challenges.complete(token, "other-owner", false);
+        assertThat(challenges.find(token).orElseThrow().state()).isEqualTo("CLAIMED");
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(401);
         assertThat(redis.getExpire(key)).isPositive().isLessThanOrEqualTo(ttl);
-        challenges.complete(hash, "first-owner", false);
+        challenges.complete(token, "first-owner", false);
         assertThat(verifyOtp(challenge.token(), challenge.code()).getResponse().getStatus()).isEqualTo(200);
     }
 
     @Test
     void wrongCodesDoNotResetChallengeLifetime() throws Exception {
         var challenge = startOtp();
-        String key = "auth:otp:{login}:challenge:" + tokens.hash(challenge.token());
+        String key = "auth:otp:{login}:challenge:" + challenge.token();
         redis.expire(key, Duration.ofSeconds(30));
         String wrong = challenge.code().equals("000000") ? "000001" : "000000";
         assertThat(verifyOtp(challenge.token(), wrong).getResponse().getStatus()).isEqualTo(401);

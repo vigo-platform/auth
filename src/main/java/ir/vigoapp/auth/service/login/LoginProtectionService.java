@@ -27,15 +27,21 @@ public class LoginProtectionService {
     private final SecureTokens tokens;
 
     public String identifierKey(String identifier) {
-        return tokens.fingerprint("identifier", identifier);
+        return "identifier:" + identifier;
     }
 
     public String accountKey(long userId) {
-        return tokens.fingerprint("account", Long.toString(userId));
+        return "account:" + userId;
+    }
+
+    /** Keep audit identifiers private; Redis keys themselves remain readable. */
+    public String auditSubject(String key) {
+        int separator = key.indexOf(':');
+        return tokens.fingerprint(key.substring(0, separator), key.substring(separator + 1));
     }
 
     public void checkIp(ClientInfo client) {
-        String key = "auth:ip:" + tokens.fingerprint("ip", String.valueOf(client.ipAddress()));
+        String key = "auth:ip:" + client.ipAddress();
         long remaining = execute(REQUEST_LIMIT, key, Integer.toString(properties.getIpMaxRequests()),
                 Long.toString(properties.getIpWindow().toMillis()));
         if (remaining > 0) {
@@ -53,7 +59,7 @@ public class LoginProtectionService {
     public void requireUnlocked(String key) {
         long remaining = lockRemaining(key);
         if (remaining > 0) {
-            log.atWarn().addKeyValue("event", "login_blocked").addKeyValue("subject", key)
+            log.atWarn().addKeyValue("event", "login_blocked").addKeyValue("subject", auditSubject(key))
                     .addKeyValue("retry_after_ms", remaining).log("Login temporarily blocked by the failure limit.");
             throw limited("LOGIN_TEMPORARILY_LOCKED", remaining);
         }
@@ -90,7 +96,7 @@ public class LoginProtectionService {
         long remaining = execute(FAILURE, "auth:failure:" + key,
                 Integer.toString(properties.getMaxFailedAttempts()), Long.toString(properties.getFailureWindow().toMillis()),
                 Long.toString(properties.getLockDuration().toMillis()), Long.toString(properties.getMaxLockDuration().toMillis()));
-        log.atWarn().addKeyValue("event", "login_failure").addKeyValue("subject", key)
+        log.atWarn().addKeyValue("event", "login_failure").addKeyValue("subject", auditSubject(key))
                 .addKeyValue("lock_ms", remaining).log("Failed authentication attempt counted.");
     }
 

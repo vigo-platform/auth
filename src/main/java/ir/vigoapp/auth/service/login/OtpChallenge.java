@@ -4,8 +4,8 @@ import ir.vigoapp.auth.entity.OtpChannel;
 import java.time.Instant;
 
 /** Internal Redis state; never serialize this record into an API response or log. */
-public record OtpChallenge(String tokenHash, String identifierKey, String destinationKey, long userId,
-                           long credentialVersion, String codeHash, OtpChannel channel, Instant expiresAt,
+public record OtpChallenge(String token, String identifierKey, String destination, long userId,
+                           long credentialVersion, String code, OtpChannel channel, Instant expiresAt,
                            int failedAttempts, String state) {
     public boolean isOpen(Instant now) {
         return "OPEN".equals(state) && expiresAt.isAfter(now);

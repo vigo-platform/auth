@@ -18,7 +18,7 @@ import java.time.Duration;
 @Validated
 @ConfigurationProperties(prefix = "auth", ignoreUnknownFields = false)
 public class AuthProperties {
-    /** Base64-encoded, independent random secret, shared by all Auth instances. */
+    /** Base64 secret for audit-log identifier fingerprints only; not used by Redis or OTP verification. */
     @NotBlank
     private String otpSecret;
 

@@ -74,7 +74,7 @@ public class LoginService {
         } catch (IllegalArgumentException exception) {
             passwords.matches(request.password(), dummyPasswordHash);
             log.atWarn().addKeyValue("event", "login_rejected").addKeyValue("reason", "unsupported_password_hash")
-                    .addKeyValue("subject", identifierKey).addKeyValue("ip_address", client.ipAddress())
+                    .addKeyValue("subject", protection.auditSubject(identifierKey)).addKeyValue("ip_address", client.ipAddress())
                     .log("Password verification could not use the stored credential format.");
             matches = false;
         }
@@ -82,7 +82,7 @@ public class LoginService {
             protection.failed(identifierKey, info == null ? null : info.user().userId());
             log.atWarn().addKeyValue("event", "login_rejected").addKeyValue("result", "FAILURE")
                     .addKeyValue("reason", info == null ? "account_not_found" : !matches ? "invalid_password" : "account_ineligible")
-                    .addKeyValue("subject", identifierKey).addKeyValue("user_id", info == null ? null : info.user().userId())
+                    .addKeyValue("subject", protection.auditSubject(identifierKey)).addKeyValue("user_id", info == null ? null : info.user().userId())
                     .addKeyValue("ip_address", client.ipAddress()).addKeyValue("user_agent", client.userAgent())
                     .addKeyValue("device_id", client.deviceId()).log("Password login rejected.");
             throw AuthException.invalidCredentials();
@@ -121,7 +121,7 @@ public class LoginService {
         else if (!protection.reserveAccountCooldown(info.user().userId())) skipReason = "account_cooldown";
         if (skipReason != null) {
             log.atInfo().addKeyValue("event", "otp_request_accepted").addKeyValue("delivery", "skipped")
-                    .addKeyValue("subject", identifierKey).addKeyValue("channel", channel).addKeyValue("reason", skipReason)
+                    .addKeyValue("subject", protection.auditSubject(identifierKey)).addKeyValue("channel", channel).addKeyValue("reason", skipReason)
                     .addKeyValue("user_id", info == null ? null : info.user().userId())
                     .addKeyValue("ip_address", client.ipAddress()).addKeyValue("user_agent", client.userAgent())
                     .addKeyValue("device_id", client.deviceId()).log("OTP request accepted without challenge delivery.");
@@ -134,8 +134,8 @@ public class LoginService {
     public LoginResponse verify(VerifyLoginRequest request, ClientInfo client) {
         requireLoginEnabled();
         protection.checkIp(client);
-        String hash = tokens.hash(request.mfaToken());
-        var challenge = challenges.find(hash).orElseThrow(AuthException::invalidOtp);
+        String token = request.mfaToken();
+        var challenge = challenges.find(token).orElseThrow(AuthException::invalidOtp);
         var now = clock.instant();
         if (!challenge.isOpen(now)) {
             log.atWarn().addKeyValue("event", "otp_rejected").addKeyValue("result", "REJECTED")
@@ -146,8 +146,8 @@ public class LoginService {
         }
         protection.requireUnlocked(challenge.identifierKey());
         protection.requireUnlocked(protection.accountKey(challenge.userId()));
-        if (!tokens.matchesOtp(hash, request.otp(), challenge.codeHash())) {
-            int attempts = challenges.failed(hash);
+        if (!request.otp().equals(challenge.code())) {
+            int attempts = challenges.failed(token);
             if (attempts > 0) {
                 protection.failed(challenge.identifierKey(), challenge.userId());
                 log.atWarn().addKeyValue("event", "otp_verification_failed").addKeyValue("result", "FAILURE")
@@ -159,14 +159,14 @@ public class LoginService {
             throw AuthException.invalidOtp();
         }
         String owner = tokens.randomToken();
-        if (!challenges.claim(hash, owner)) throw AuthException.invalidOtp();
+        if (!challenges.claim(token, owner)) throw AuthException.invalidOtp();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCompletion(int status) {
                 try {
                     // Unknown outcomes remain claimed. Release only after a confirmed database rollback.
                     if (status == STATUS_COMMITTED || status == STATUS_ROLLED_BACK) {
-                        challenges.complete(hash, owner, status == STATUS_COMMITTED);
+                        challenges.complete(token, owner, status == STATUS_COMMITTED);
                     }
                 } catch (RuntimeException exception) {
                     log.atWarn().addKeyValue("event", "otp_completion_failed").addKeyValue("user_id", challenge.userId())
@@ -188,7 +188,7 @@ public class LoginService {
         now = clock.instant();
         if (!challenge.expiresAt().isAfter(now) || user.credentialVersion() != challenge.credentialVersion()
                 || !AccountEligibility.canReceiveOtp(user, challenge.channel())
-                || !challenge.destinationKey().equals(destinationKey(user, challenge.channel()))) {
+                || !challenge.destination().equals(AccountEligibility.destination(user, challenge.channel()))) {
             throw AuthException.invalidOtp();
         }
         protection.requireUnlocked(challenge.identifierKey());
@@ -201,10 +201,9 @@ public class LoginService {
     private LoginResponse issueChallenge(UserAccount user, String identifierKey, OtpChannel channel, ClientInfo client) {
         var now = clock.instant();
         String token = tokens.randomToken();
-        String hash = tokens.hash(token);
         String code = tokens.otp();
-        challenges.create(new OtpChallenge(hash, identifierKey, destinationKey(user, channel), user.userId(), user.credentialVersion(),
-                tokens.fingerprint("login-otp", hash + ":" + code), channel, now.plus(properties.getOtpTtl()), 0, "OPEN"),
+        challenges.create(new OtpChallenge(token, identifierKey, AccountEligibility.destination(user, channel), user.userId(), user.credentialVersion(),
+                code, channel, now.plus(properties.getOtpTtl()), 0, "OPEN"),
                 protection.accountKey(user.userId()));
         notifications.sendLoginOtp(user.userId(), channel, AccountEligibility.destination(user, channel), code);
         log.atInfo().addKeyValue("event", "otp_challenge_created").addKeyValue("user_id", user.userId())
@@ -231,10 +230,6 @@ public class LoginService {
             if (exception.getCode() == UserClientException.Code.NOT_FOUND) return null;
             throw exception;
         }
-    }
-
-    private String destinationKey(UserAccount user, OtpChannel channel) {
-        return tokens.fingerprint("otp-destination", channel.name() + ":" + AccountEligibility.destination(user, channel));
     }
 
     private void requireLoginEnabled() {

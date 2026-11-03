@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.validator.constraints.time.DurationMax;
 import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
@@ -30,6 +31,8 @@ public class AuthProperties {
     private Duration otpCooldown = Duration.ofMinutes(1);
     @NotNull @DurationMin(seconds = 30)
     private Duration registrationTokenTtl = Duration.ofMinutes(15);
+    @NotNull @DurationMin(seconds = 30) @DurationMax(minutes = 15)
+    private Duration passwordGrantTtl = Duration.ofMinutes(5);
     @Min(1) @Max(10)
     private int otpMaxAttempts = 3;
     @Min(1) @Max(100)

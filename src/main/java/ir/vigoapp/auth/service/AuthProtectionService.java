@@ -86,7 +86,7 @@ public class AuthProtectionService {
         return reserveCooldown(accountKey(userId));
     }
 
-    private long reserveCooldown(String key) {
+    public long reserveCooldown(String key) {
         return execute(COOLDOWN, "auth:otp-cooldown:" + key, Long.toString(properties.getOtpCooldown().toMillis()));
     }
 

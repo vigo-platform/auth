@@ -75,6 +75,7 @@ auth:
   otp-cooldown: ${AUTH_OTP_COOLDOWN:1m}
   otp-max-attempts: ${AUTH_OTP_MAX_ATTEMPTS:3}
   registration-token-ttl: ${AUTH_REGISTRATION_TOKEN_TTL:15m}
+  password-grant-ttl: ${AUTH_PASSWORD_GRANT_TTL:5m}
   max-failed-attempts: ${AUTH_MAX_FAILED_ATTEMPTS:5}
   failure-window: ${AUTH_FAILURE_WINDOW:30m}
   lock-duration: ${AUTH_LOCK_DURATION:1m}

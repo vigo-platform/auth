@@ -17,6 +17,7 @@ import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.model.registration.RegistrationChallenge;
 import ir.vigoapp.auth.model.registration.RegistrationGrant;
 import ir.vigoapp.auth.repository.registration.RegistrationRepository;
+import ir.vigoapp.auth.security.PasswordPolicy;
 import ir.vigoapp.auth.security.SecureTokens;
 import ir.vigoapp.auth.security.login.LoginIdentifier;
 import lombok.RequiredArgsConstructor;
@@ -25,7 +26,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 
 @Service
@@ -115,7 +115,7 @@ public class RegistrationService {
     public RegisterResponse register(RegisterRequest request, ClientInfo client) {
         policy.requireRegistrationEnabled();
         protection.checkIp(client);
-        validatePassword(request.password());
+        PasswordPolicy.validateNewPassword(request.password());
         var grant = registrations.findGrant(request.registrationToken()).orElseThrow(this::invalidRegistrationToken);
         policy.requireRegistrationOtpEnabled(grant.channel());
         if (!grant.expiresAt().isAfter(clock.instant())) throw invalidRegistrationToken();
@@ -196,16 +196,6 @@ public class RegistrationService {
             log.atWarn().addKeyValue("event", "registration_counter_cleanup_failed").addKeyValue("user_id", user.userId())
                     .addKeyValue("reason", exception.getClass().getSimpleName()).addKeyValue("ip_address", client.ipAddress())
                     .log("Created account could not clear its failure counters.");
-        }
-    }
-
-    private void validatePassword(String password) {
-        if (password == null || password.isBlank() || password.length() < 8) {
-            throw invalidRequest();
-        }
-        if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw new AuthException(HttpStatus.BAD_REQUEST, "INVALID_PASSWORD_LENGTH",
-                    "Password must not exceed 72 UTF-8 bytes.", "طول رمز عبور نباید بیش از ۷۲ بایت باشد.");
         }
     }
 

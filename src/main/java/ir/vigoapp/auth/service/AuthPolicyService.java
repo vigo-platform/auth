@@ -56,6 +56,16 @@ public class AuthPolicyService {
         return channel;
     }
 
+    public OtpChannel requireDefaultPasswordOtpChannel() {
+        var current = settings.getCurrent();
+        requireChannelEnabled(current, current.defaultOtpChannel());
+        return current.defaultOtpChannel();
+    }
+
+    public void requirePasswordOtpEnabled(OtpChannel channel) {
+        requireChannelEnabled(settings.getCurrent(), channel);
+    }
+
     private void requireChannelEnabled(AuthSettingDto current, OtpChannel channel) {
         boolean enabled = channel != null && switch (channel) {
             case EMAIL -> current.emailNotificationEnabled();

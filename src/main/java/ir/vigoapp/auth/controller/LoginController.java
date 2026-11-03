@@ -67,10 +67,16 @@ public class LoginController {
         return ApiResponse.success("All sessions logged out successfully.", "خروج از همه نشست‌ها انجام شد.", null);
     }
 
-    private static ApiResponse<LoginResponse> loginResponse(LoginResponse result) {
-        return result.challenge() == null
-                ? ApiResponse.success("Logged in successfully.", "ورود با موفقیت انجام شد.", result)
-                : ApiResponse.success("If the account is eligible, a verification code will be sent.",
-                        "در صورت امکان ورود به حساب، کد تأیید ارسال می‌شود.", result);
+    public static ApiResponse<LoginResponse> loginResponse(LoginResponse result) {
+        return switch (result.step()) {
+            case "SUCCESS" -> ApiResponse.success("Logged in successfully.", "ورود با موفقیت انجام شد.", result);
+            case "OTP_REQUIRED" -> ApiResponse.success("If the account is eligible, a verification code will be sent.",
+                    "در صورت امکان ورود به حساب، کد تأیید ارسال می‌شود.", result);
+            case "PASSWORD_CHANGE_REQUIRED" -> ApiResponse.success("Choose a new password to complete sign-in.",
+                    "برای تکمیل ورود، رمز عبور جدید انتخاب کنید.", result);
+            case "PASSWORD_UPDATED_LOGIN_REQUIRED" -> ApiResponse.success("Password updated. Please sign in.",
+                    "رمز عبور تغییر کرد. لطفاً وارد شوید.", result);
+            default -> throw new IllegalStateException("Unknown login response step");
+        };
     }
 }

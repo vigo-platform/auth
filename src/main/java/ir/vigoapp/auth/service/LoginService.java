@@ -14,6 +14,7 @@ import ir.vigoapp.auth.exception.AuthException;
 import ir.vigoapp.auth.model.OtpChallenge;
 import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.repository.OtpChallengeRepository;
+import ir.vigoapp.auth.security.PasswordPolicy;
 import ir.vigoapp.auth.security.SecureTokens;
 import ir.vigoapp.auth.security.login.AccountEligibility;
 import ir.vigoapp.auth.security.login.LoginIdentifier;
@@ -26,7 +27,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 
 @Service
@@ -35,6 +35,7 @@ public class LoginService {
     private final UserGrpcClient users;
     private final AuthPolicyService policy;
     private final SessionService sessions;
+    private final PasswordLifecycleService passwordLifecycle;
     private final AuthProtectionService protection;
     private final OtpChallengeRepository challenges;
     private final NotificationService notifications;
@@ -45,12 +46,14 @@ public class LoginService {
     private final String dummyPasswordHash;
 
     public LoginService(UserGrpcClient users, AuthPolicyService policy, SessionService sessions,
+                        PasswordLifecycleService passwordLifecycle,
                         AuthProtectionService protection, OtpChallengeRepository challenges,
                         NotificationService notifications, SecureTokens tokens, PasswordEncoder passwords,
                         AuthProperties properties, Clock clock) {
         this.users = users;
         this.policy = policy;
         this.sessions = sessions;
+        this.passwordLifecycle = passwordLifecycle;
         this.protection = protection;
         this.challenges = challenges;
         this.notifications = notifications;
@@ -68,10 +71,7 @@ public class LoginService {
         String identifier = LoginIdentifier.normalize(request.identifier());
         String identifierKey = protection.identifierKey(identifier);
         protection.requireUnlocked(identifierKey);
-        if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw new AuthException(HttpStatus.BAD_REQUEST, "INVALID_PASSWORD_LENGTH",
-                    "Password must not exceed 72 UTF-8 bytes.", "طول رمز عبور نباید بیش از ۷۲ بایت باشد.");
-        }
+        PasswordPolicy.requireBcryptLength(request.password());
         UserLoginInfo info = findLoginInfo(identifier);
         if (info != null) protection.requireUnlocked(protection.accountKey(info.user().userId()));
         boolean matches;
@@ -84,7 +84,7 @@ public class LoginService {
                     .log("Password verification could not use the stored credential format.");
             matches = false;
         }
-        if (info == null || !matches || !AccountEligibility.canLogin(info.user())) {
+        if (info == null || !matches || !AccountEligibility.isActive(info.user())) {
             protection.failed(identifierKey, info == null ? null : info.user().userId());
             log.atWarn().addKeyValue("event", "login_rejected").addKeyValue("result", "FAILURE")
                     .addKeyValue("reason", info == null ? "account_not_found" : !matches ? "invalid_password" : "account_ineligible")
@@ -123,8 +123,10 @@ public class LoginService {
             return issueChallenge(user, identifierKey, channel, true, client);
         }
         policy.requireLoginEnabled();
-        var response = LoginResponse.authenticated(sessions.create(user, client));
-        clearFailuresAfterCommit(identifierKey, user.userId(), client, "PASSWORD");
+        var response = user.credentialsExpired()
+                ? LoginResponse.passwordChangeRequired(passwordLifecycle.issueExpired(user, null, null, true))
+                : LoginResponse.authenticated(sessions.create(user, client));
+        finishAfterCommit(identifierKey, user.userId(), client, "PASSWORD", user.credentialsExpired());
         return response;
     }
 
@@ -230,8 +232,10 @@ public class LoginService {
         protection.requireUnlocked(challenge.identifierKey());
         protection.requireUnlocked(protection.accountKey(user.userId()));
         policy.requireLoginOtpEnabled(challenge.channel());
-        var response = LoginResponse.authenticated(sessions.create(user, client));
-        clearFailuresAfterCommit(challenge.identifierKey(), user.userId(), client, challenge.authMethod());
+        var response = user.credentialsExpired()
+                ? LoginResponse.passwordChangeRequired(passwordLifecycle.issueExpiredFromOtp(user, challenge, owner))
+                : LoginResponse.authenticated(sessions.create(user, client));
+        finishAfterCommit(challenge.identifierKey(), user.userId(), client, challenge.authMethod(), user.credentialsExpired());
         return response;
     }
 
@@ -288,21 +292,24 @@ public class LoginService {
         }
     }
 
-    private void clearFailuresAfterCommit(String identifierKey, long userId, ClientInfo client, String authMethod) {
+    private void finishAfterCommit(String identifierKey, long userId, ClientInfo client, String authMethod,
+                                   boolean passwordChangeRequired) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                log.atInfo().addKeyValue("event", "login_success").addKeyValue("result", "SUCCESS")
+                log.atInfo().addKeyValue("event", passwordChangeRequired ? "login_password_change_required" : "login_success")
+                        .addKeyValue("result", passwordChangeRequired ? "PASSWORD_CHANGE_REQUIRED" : "SUCCESS")
                         .addKeyValue("auth_method", authMethod).addKeyValue("user_id", userId)
                         .addKeyValue("ip_address", client.ipAddress()).addKeyValue("user_agent", client.userAgent())
-                        .addKeyValue("device_id", client.deviceId()).log("User logged in successfully.");
+                        .addKeyValue("device_id", client.deviceId())
+                        .log(passwordChangeRequired ? "Login factors verified; a password change is required." : "User logged in successfully.");
                 try {
                     protection.clearFailures(identifierKey, userId);
                 } catch (DataAccessException exception) {
                     // The login is already committed; never lose the response because cleanup failed.
                     log.atWarn().addKeyValue("event", "login_counter_cleanup_failed").addKeyValue("user_id", userId)
                             .addKeyValue("ip_address", client.ipAddress()).addKeyValue("reason", exception.getClass().getSimpleName())
-                            .log("Committed login could not clear its failure counters.");
+                            .log("Completed login proof could not clear its failure counters.");
                 }
             }
         });

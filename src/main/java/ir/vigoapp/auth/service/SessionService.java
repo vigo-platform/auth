@@ -41,13 +41,6 @@ public class SessionService {
 
     @Transactional
     public TokenResponse create(UserAccount user, ClientInfo client) {
-        // TODO(credentials-expiry): Implement after registration/change_password. This is the final
-        // gate shared by correct password-only login, password + verified 2FA, and verified
-        // passwordless OTP. If credentialsExpired is true, continue to a required new-password step
-        // instead of rejecting login here. Only a successful password change in User should clear
-        // credentialsExpired; then revalidate the account and issue the normal session/tokens.
-        // Do not clear expiry merely because authentication succeeded or issue tokens before the
-        // password change. Coordinate with AccountEligibility to remove its early expiry checks.
         if (!AccountEligibility.canLogin(user)) throw AuthException.invalidCredentials();
         Instant now = clock.instant();
         var session = sessions.save(new AuthSession(user, now, now.plus(properties.getSessionTtl())));
@@ -124,8 +117,7 @@ public class SessionService {
                 refreshTokens.revokeAllByUserId(user.userId(), now);
             } else {
                 // Preserve current credentials and any newer login committed after the User snapshot.
-                sessions.revokeOlderCredentialsByUserId(user.userId(), user.credentialVersion(), now, "USER_STATE_CHANGED");
-                refreshTokens.revokeOlderCredentialsByUserId(user.userId(), user.credentialVersion(), now);
+                revokeOlderCredentials(user.userId(), user.credentialVersion(), now, "USER_STATE_CHANGED");
             }
             log.atWarn().addKeyValue("event", "refresh_rejected").addKeyValue("result", "REJECTED")
                     .addKeyValue("user_id", user.userId()).addKeyValue("session_id", sessionId)
@@ -188,6 +180,16 @@ public class SessionService {
                         .addKeyValue("device_id", client.deviceId()).log("All user sessions logged out.");
             }
         });
+    }
+
+    @Transactional
+    public void revokeOlderCredentials(long userId, long credentialVersion) {
+        revokeOlderCredentials(userId, credentialVersion, clock.instant(), "PASSWORD_CHANGED");
+    }
+
+    private void revokeOlderCredentials(long userId, long credentialVersion, Instant now, String reason) {
+        sessions.revokeOlderCredentialsByUserId(userId, credentialVersion, now, reason);
+        refreshTokens.revokeOlderCredentialsByUserId(userId, credentialVersion, now);
     }
 
     private void revokeSession(AuthSession session, Instant now, String reason) {

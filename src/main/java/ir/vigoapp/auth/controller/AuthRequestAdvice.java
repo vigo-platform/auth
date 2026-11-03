@@ -8,8 +8,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ModelAttribute;
 
-/** Shared cache policy and safe request auditing for both authentication workflows. */
-@ControllerAdvice(assignableTypes = {LoginController.class, RegistrationController.class})
+/** Shared cache policy and safe request auditing for authentication workflows. */
+@ControllerAdvice(assignableTypes = {LoginController.class, RegistrationController.class, PasswordLifecycleController.class})
 @Slf4j
 public class AuthRequestAdvice {
     @ModelAttribute

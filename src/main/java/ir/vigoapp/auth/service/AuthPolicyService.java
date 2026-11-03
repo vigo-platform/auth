@@ -23,10 +23,26 @@ public class AuthPolicyService {
     }
 
     public void requireRegistrationEnabled() {
-        if (!settings.getCurrent().registerEnabled()) {
+        requireRegistrationSettings();
+    }
+
+    public void requireRegistrationOtpEnabled(OtpChannel channel) {
+        var current = requireRegistrationSettings();
+        // A guest has no account or in-app destination yet.
+        if (channel != OtpChannel.EMAIL && channel != OtpChannel.SMS) {
+            throw new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "OTP_CHANNEL_DISABLED",
+                    "Registration requires email or SMS verification.", "تأیید ثبت‌نام باید از طریق ایمیل یا پیامک انجام شود.");
+        }
+        requireChannelEnabled(current, channel);
+    }
+
+    private AuthSettingDto requireRegistrationSettings() {
+        var current = settings.getCurrent();
+        if (!current.registerEnabled()) {
             throw new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "REGISTRATION_DISABLED",
                     "Registration is temporarily disabled.", "ثبت‌نام موقتاً غیرفعال است.");
         }
+        return current;
     }
 
     public void requireLoginOtpEnabled(OtpChannel channel) {

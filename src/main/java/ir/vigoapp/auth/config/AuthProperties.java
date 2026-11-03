@@ -28,6 +28,8 @@ public class AuthProperties {
     private Duration otpTtl = Duration.ofMinutes(5);
     @NotNull @DurationMin(seconds = 1)
     private Duration otpCooldown = Duration.ofMinutes(1);
+    @NotNull @DurationMin(seconds = 30)
+    private Duration registrationTokenTtl = Duration.ofMinutes(15);
     @Min(1) @Max(10)
     private int otpMaxAttempts = 3;
     @Min(1) @Max(100)

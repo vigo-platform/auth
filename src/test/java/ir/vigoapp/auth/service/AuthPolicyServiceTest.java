@@ -71,6 +71,21 @@ class AuthPolicyServiceTest {
         }
     }
 
+    @ParameterizedTest
+    @MethodSource("channelCombinations")
+    void registrationUsesItsOwnSwitchAndOnlyGuestDeliveryChannels(int switches, OtpChannel channel) {
+        current = AuthSettingDto.builder().loginEnabled(false).registerEnabled(true)
+                .emailNotificationEnabled((switches & 1) != 0)
+                .smsNotificationEnabled((switches & 2) != 0).inAppNotificationEnabled((switches & 4) != 0).build();
+        boolean enabled = channel != OtpChannel.IN_APP && (switches & (1 << channel.ordinal())) != 0;
+        if (enabled) assertThatCode(() -> policy.requireRegistrationOtpEnabled(channel)).doesNotThrowAnyException();
+        else assertDisabled(() -> policy.requireRegistrationOtpEnabled(channel));
+
+        current = current.toBuilder().registerEnabled(false).build();
+        assertThatThrownBy(() -> policy.requireRegistrationOtpEnabled(channel)).isInstanceOfSatisfying(AuthException.class,
+                error -> assertThat(error.getCode()).isEqualTo("REGISTRATION_DISABLED"));
+    }
+
     private static Stream<Object[]> channelCombinations() {
         return IntStream.range(0, 8).boxed().flatMap(switches -> Stream.of(OtpChannel.values())
                 .map(channel -> new Object[]{switches, channel}));

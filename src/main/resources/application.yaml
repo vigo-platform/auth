@@ -65,7 +65,7 @@ jwt:
   key-id: ${JWT_KEY_ID:vigo-auth-key-1}
   private-key-path: ${JWT_PRIVATE_KEY_PATH:.keys/private_key.pem}
   public-key-path: ${JWT_PUBLIC_KEY_PATH:.keys/public_key.pem}
-  issuer: ${JWT_ISSUER:https://auth.vigoapp.ir}
+  issuer: ${JWT_ISSUER:auth.vigoapp.ir}
   audience: ${JWT_AUDIENCE:vigo-api}
   access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
 

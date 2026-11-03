@@ -9,15 +9,16 @@ All endpoints use `/api/v1/auth` and the project's `ApiResponse`: `success`, opt
 | `POST /register/initiate` | `{"identifier":"new@example.com"}` or a mobile number | Registration OTP challenge; see [registration](registration.md) |
 | `POST /register/verify` | `{"mfaToken":"...","otp":"012345"}` | A temporary `registrationToken`; no account or login tokens |
 | `POST /register/complete` (alias `/register`) | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId` and User-owned `status`; names optional; no tokens |
-| `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, or an OTP challenge when account two-factor authentication or global password OTP is enabled |
+| `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, OTP challenge, or password change continuation |
 | `POST /login-otp-email` | `{"email":"user@example.com"}` | Generic OTP challenge response |
 | `POST /login-otp-phone` | `{"phone":"09123456789"}` | Generic SMS challenge response |
-| `POST /verify` | `{"mfaToken":"...","otp":"012345"}` | Consumes the login challenge and issues a token pair |
+| `POST /verify` | `{"mfaToken":"...","otp":"012345"}` | Consumes the login challenge and issues a token pair or password change continuation |
+| `POST /password/expired/complete` | `{"passwordChangeToken":"...","newPassword":"..."}` | Updates an expired password and completes sign-in when the account still qualifies |
 | `POST /refresh` | `{"refreshToken":"..."}` | Atomically consumes the refresh token and returns its replacement plus a new access token |
 | `POST /logout` | None. Requires `Authorization: Bearer <accessToken>` | Revokes the session identified by the verified JWT `sid` and all its refresh tokens |
 | `POST /logout-all` | None. Requires `Authorization: Bearer <accessToken>` | Revokes all sessions for the verified JWT subject |
 
-Registration, login, OTP verification and refresh are explicitly public. Both logout endpoints require a valid access token. Logout revokes refresh tokens. An issued access token stays valid until its expiration and can still authenticate requests, including logout. Send refresh tokens in the JSON body of `/refresh`. The API does not set authentication cookies.
+Registration, login, OTP verification, expired-password completion and refresh are explicitly public. Both logout endpoints require a valid access token. Logout revokes refresh tokens. An issued access token stays valid until its expiration and can still authenticate requests, including logout. Send refresh tokens in the JSON body of `/refresh`. The API does not set authentication cookies.
 
 Request aliases `refresh_token`, `mfa_token`, and `mfa` are accepted for the corresponding camelCase fields. Responses use camelCase data fields. Emails are stripped and lowercased. Iranian local, `0098` and `+98` phone variants normalize to E.164 `+989…`; other international phone numbers must already be E.164. Passwords are never trimmed; bcrypt inputs exceeding 72 UTF-8 bytes are rejected rather than silently truncated. Raw bcrypt and Spring `{bcrypt}` hashes are supported.
 
@@ -53,7 +54,7 @@ OTP initiation returns `data.step = "OTP_REQUIRED"` and `data.challenge = {"mfaT
 
 ## Authentication rules
 
-The User service remains the owner of users, bcrypt hashes, roles, status, verified contacts and credential versions. Auth uses the existing `UserGrpcClient`; no user table or raw SQL data access is added. `UNKNOWN`, pending, suspended, deactivated and credential-expired accounts cannot log in. OTP delivery requires the selected verified email/phone. OTP verification and refresh re-fetch the account and check eligibility and `credentialVersion` before issuing tokens. Verification also checks the challenge's stored delivery destination, so changing an email/phone invalidates previously sent codes. Returned user IDs/lookup identifiers must match the requested identity. User service timeouts/unavailability return 503 without consuming the OTP or refresh token.
+The User service remains the owner of users, bcrypt hashes, roles, status, verified contacts and credential versions. Auth uses the existing `UserGrpcClient`; no user table or raw SQL data access is added. `UNKNOWN`, pending, suspended and deactivated accounts cannot log in. An active account with expired credentials must verify all required login factors before receiving a password change continuation. OTP delivery requires the selected verified email/phone. OTP verification and refresh re-fetch the account and check eligibility and `credentialVersion` before issuing tokens. Verification also checks the challenge's stored delivery destination, so changing an email/phone invalidates previously sent codes. Returned user IDs/lookup identifiers must match the requested identity. User service timeouts/unavailability return 503 without consuming the OTP or refresh token.
 
 When refresh detects a credential-version mismatch for an otherwise eligible account,
 it rejects the request and revokes only sessions and refresh tokens with credential
@@ -87,23 +88,20 @@ Two-factor audit events use the existing structured logging setup. `login_second
 
 Deploy User 3.1.0 support before this Auth version: omitted proto3 booleans default to `false`. Roll out this Auth version across all instances together, since older instances do not enforce the new flag. Existing Redis challenges without `passwordVerified` are treated as having no password proof: two-factor accounts must start a fresh password login; accounts without two-factor authentication can complete their existing OTP challenges. No SQL migration or Redis flush is required. Existing sessions retain their refresh behavior; enabling two-factor authentication controls new logins and does not by itself revoke sessions.
 
-## TODO: expired credentials after authentication
+## Expired credentials after authentication
 
-Deferred until the registration and `change_password` workflows are completed:
-
-- Do not use `credentialsExpired` to reject password verification, OTP issuance or
-  OTP delivery. Continue to enforce account status, verified contacts, lockout and 2FA.
-- Check expiry only after a correct password for password-only login, after a
-  correct password and OTP for 2FA, or after a correct OTP for passwordless login.
-- At the final gate before normal session/token creation, require an expired user
-  to choose a new password. A successful password change in User must clear expiry;
-  revalidate the account before completing login. Authentication alone must not
-  clear expiry or grant a normal session while the password change is outstanding.
-
-This is a TODO only. Current expiry rejection, including its effect on OTP delivery,
-remains in place until the continuation is implemented. The code TODOs are in
-`AccountEligibility.canLogin()` and `SessionService.create()`. Refresh continues to
-reject expired credentials.
+After a correct password in password-only login, a correct password and OTP in
+2FA, or a correct OTP in passwordless login, Auth checks credential expiry.
+If expired, it returns HTTP 200 with
+`data.step = "PASSWORD_CHANGE_REQUIRED"` and
+`data.passwordChange = {"passwordChangeToken":"...","expiresIn":300}`.
+No access or refresh token is issued at this step. Submit the new password and
+the one-time token to `POST /password/expired/complete`. Auth rechecks the
+account after User updates the password and issues a token pair only when the
+account and saved login proof still meet current login policy. If the password
+was updated and sign-in must restart, the response step is
+`PASSWORD_UPDATED_LOGIN_REQUIRED`. Refresh continues to reject expired
+credentials. See [password lifecycle](password-lifecycle-design.md).
 
 ## Throttling and cooldown
 

@@ -1,0 +1,22 @@
+info:
+  name: Registration Verify
+  type: http
+  seq: 12
+
+http:
+  method: POST
+  url: "{{baseUrl}}/api/v1/auth/register/verify"
+  body:
+    type: json
+    data: |-
+      {
+        "mfaToken": "{mlQXtJ7l41cwEYzDkcW8Nh5OAhpjwqRTT3i5Qsq2VJw",
+        "otp": "50861"
+      }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

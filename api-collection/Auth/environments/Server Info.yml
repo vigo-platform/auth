@@ -15,3 +15,12 @@ variables:
   - name: mfaToken
     value: ""
     description: "Copy from data.challenge.mfaToken"
+  - name: registrationMfaToken
+    value: ""
+    description: "Copy from registration initiate data.mfaToken; separate from login MFA"
+  - name: registrationOtp
+    value: ""
+    description: "Registration code delivered by the configured notification transport"
+  - name: registrationToken
+    value: ""
+    description: "Copy from registration verify data.registrationToken; valid for completion only"

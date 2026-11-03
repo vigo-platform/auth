@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ir.vigoapp.auth.client.user.UserGrpcClient;
 import ir.vigoapp.auth.client.user.exception.UserClientException;
+import ir.vigoapp.auth.client.user.model.ChangePasswordCommand;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.client.user.model.UserLoginInfo;
 import ir.vigoapp.auth.config.AuthProperties;
@@ -39,6 +40,7 @@ import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -88,6 +90,7 @@ class LoginFlowIntegrationTest {
     @Autowired SecureTokens tokens;
     @Autowired AuthProperties properties;
     @Autowired JwtDecoder decoder;
+    @Autowired PasswordEncoder passwordEncoder;
     @Autowired StringRedisTemplate redis;
     @Autowired javax.sql.DataSource dataSource;
     @Autowired UserGrpcClient users;
@@ -1093,15 +1096,220 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void unverifiedContactAndExpiredCredentialsCannotReceiveOtp() throws Exception {
-        setUser(account(UserAccount.AccountStatus.ACTIVE, 3, false, false));
+    void unverifiedContactCannotReceiveOtpEvenWhenCredentialsAreExpired() throws Exception {
+        setUser(account(UserAccount.AccountStatus.ACTIVE, 3, true, false));
         call("/login-otp-email", Map.of("email", "user@example.com"));
         verifyNoInteractions(notifications);
-        clearCooldown();
+    }
+
+    @Test
+    void expiredPasswordOnlyLoginRequiresCorrectPasswordBeforeIssuingChangeGrant() throws Exception {
         setUser(account(UserAccount.AccountStatus.ACTIVE, 3, true, true));
-        assertThat(password("user@example.com", "correct-password").getResponse().getStatus()).isEqualTo(401);
-        call("/login-otp-email", Map.of("email", "user@example.com"));
+        assertThat(password("user@example.com", "wrong-password").getResponse().getStatus()).isEqualTo(401);
+        assertPasswordChangeGrant(password("user@example.com", "correct-password"));
         verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void expiredLoginOtpIssuesChangeGrantOnlyAfterSuccessfulVerification(boolean twoFactorEnabled) throws Exception {
+        setUser(account(UserAccount.AccountStatus.ACTIVE, 3, true, true).toBuilder()
+                .twoFactorEnabled(twoFactorEnabled).build());
+        var started = twoFactorEnabled
+                ? password("user@example.com", "correct-password")
+                : call("/login-otp-email", Map.of("email", "user@example.com"));
+        var data = tree(started).path("data");
+        assertThat(data.path("step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(data.has("tokens")).isFalse();
+        assertThat(data.has("passwordChange")).isFalse();
+        String mfaToken = data.at("/challenge/mfaToken").asText();
+        var challenge = challenges.find(mfaToken).orElseThrow();
+        verify(notifications).sendLoginOtp(42, OtpChannel.EMAIL, "user@example.com", challenge.code());
+        String incorrect = challenge.code().equals("000000") ? "000001" : "000000";
+        assertThat(verifyOtp(mfaToken, incorrect).getResponse().getStatus()).isEqualTo(401);
+        assertPasswordChangeGrant(verifyOtp(mfaToken, challenge.code()));
+        assertThat(verifyOtp(mfaToken, challenge.code()).getResponse().getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void expiredLoginCompletionValidatesPasswordAndIssuesSessionForNewVersionOnce() throws Exception {
+        var expired = account(UserAccount.AccountStatus.ACTIVE, 3, true, true);
+        var updated = expired.toBuilder().credentialVersion(4).credentialsExpired(false).build();
+        setUser(expired);
+        doReturn(new UserLoginInfo(expired, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+        String token = assertPasswordChangeGrant(password("user@example.com", "correct-password"));
+        String route = "/password/expired/complete";
+        String newPassword = "different-password";
+
+        var invalid = call(route, Map.of("passwordChangeToken", token, "newPassword", "ش".repeat(37)));
+        assertThat(invalid.getResponse().getStatus()).isEqualTo(400);
+        verify(users, never()).changeUserPassword(any());
+        when(users.changeUserPassword(any())).thenAnswer(invocation -> {
+            ChangePasswordCommand command = invocation.getArgument(0);
+            assertThat(command.userId()).isEqualTo(42);
+            assertThat(command.expectedCredentialVersion()).isEqualTo(3);
+            assertThat(passwordEncoder.matches(newPassword, command.newPasswordHash())).isTrue();
+            doReturn(updated).when(users).getUserById(42);
+            return 4L;
+        });
+
+        var result = call(route, Map.of("passwordChangeToken", token, "newPassword", newPassword));
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        var data = tree(result).path("data");
+        assertThat(data.path("step").asText()).isEqualTo("SUCCESS");
+        Number credentialVersion = decoder.decode(data.at("/tokens/accessToken").asText()).getClaim("credential_version");
+        assertThat(credentialVersion.longValue()).isEqualTo(4);
+        assertThat(sessionRepository.findAll()).singleElement().satisfies(session ->
+                assertThat(session.getCredentialVersion()).isEqualTo(4));
+        assertThat(call(route, Map.of("passwordChangeToken", token, "newPassword", newPassword))
+                .getResponse().getStatus()).isEqualTo(401);
+        verify(users, times(1)).changeUserPassword(any());
+    }
+
+    @Test
+    void ambiguousPasswordUpdateKeepsGrantClaimedAndDoesNotRetryMutation() throws Exception {
+        var expired = account(UserAccount.AccountStatus.ACTIVE, 3, true, true);
+        setUser(expired);
+        doReturn(new UserLoginInfo(expired, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+        String token = assertPasswordChangeGrant(password("user@example.com", "correct-password"));
+        var update = Map.of("passwordChangeToken", token, "newPassword", "different-password");
+        when(users.changeUserPassword(any()))
+                .thenThrow(new UserClientException(UserClientException.Code.TIMEOUT, "ChangeUserPassword"));
+
+        var result = call("/password/expired/complete", update);
+        assertThat(result.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(result).path("code").asText()).isEqualTo("PASSWORD_UPDATE_OUTCOME_UNKNOWN");
+        assertThat(call("/password/expired/complete", update).getResponse().getStatus()).isEqualTo(409);
+        assertThat(sessionRepository.count()).isZero();
+        verify(users, times(1)).changeUserPassword(any());
+    }
+
+    @Test
+    void confirmedPasswordUpdateWithUnclearedExpiryRequiresFreshLogin() throws Exception {
+        var expired = account(UserAccount.AccountStatus.ACTIVE, 3, true, true);
+        setUser(expired);
+        doReturn(new UserLoginInfo(expired, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+        String token = assertPasswordChangeGrant(password("user@example.com", "correct-password"));
+        when(users.changeUserPassword(any())).thenReturn(4L);
+        when(users.getUserById(42)).thenReturn(expired.toBuilder().credentialVersion(4).build());
+
+        var update = Map.of("passwordChangeToken", token, "newPassword", "different-password");
+        var result = call("/password/expired/complete", update);
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(result).at("/data/step").asText()).isEqualTo("PASSWORD_UPDATED_LOGIN_REQUIRED");
+        assertThat(tree(result).path("data").has("tokens")).isFalse();
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(call("/password/expired/complete", update).getResponse().getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void signedInPasswordChangeRequiresReauthenticationAndStaysBoundToItsSession() throws Exception {
+        var primary = createSession();
+        var other = createSession();
+        var enrolled = twoFactorAccount();
+        setUser(enrolled);
+        doReturn(new UserLoginInfo(enrolled, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+
+        String initiate = "/password/change/initiate";
+        var current = Map.of("currentPassword", "correct-password");
+        assertThat(call(initiate, current).getResponse().getStatus()).isEqualTo(401);
+        assertThat(call(initiate, Map.of("currentPassword", "wrong-password"), primary.accessToken())
+                .getResponse().getStatus()).isEqualTo(401);
+        var started = call(initiate, current, primary.accessToken());
+        assertThat(started.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(started).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        var otp = ArgumentCaptor.forClass(String.class);
+        verify(notifications).sendPasswordChangeOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), otp.capture());
+        String verify = "/password/change/verify";
+        var proof = Map.of("mfaToken", tree(started).at("/data/challenge/mfaToken").asText(), "otp", otp.getValue());
+        assertThat(call(verify, proof, other.accessToken()).getResponse().getStatus()).isEqualTo(401);
+        var verified = call(verify, proof, primary.accessToken());
+        assertThat(verified.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(verified).at("/data/step").asText()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
+        String token = tree(verified).at("/data/passwordChange/passwordChangeToken").asText();
+
+        String complete = "/password/change/complete";
+        var update = Map.of("passwordChangeToken", token, "newPassword", "different-password");
+        assertThat(call(complete, update, other.accessToken()).getResponse().getStatus()).isEqualTo(401);
+        assertThat(call("/password/expired/complete", update).getResponse().getStatus()).isEqualTo(401);
+        var reused = call(complete, Map.of("passwordChangeToken", token, "newPassword", "correct-password"),
+                primary.accessToken());
+        assertThat(reused.getResponse().getStatus()).isEqualTo(400);
+        assertThat(tree(reused).path("code").asText()).isEqualTo("PASSWORD_REUSED");
+        verify(users, never()).changeUserPassword(any());
+        when(users.changeUserPassword(any())).thenReturn(4L);
+        var changed = call(complete, update, primary.accessToken());
+        assertThat(changed.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(changed).at("/data/step").asText()).isEqualTo("PASSWORD_UPDATED_LOGIN_REQUIRED");
+        assertThat(tree(changed).path("data").has("tokens")).isFalse();
+        assertAllFamiliesRevoked();
+        assertThat(call(initiate, current, primary.accessToken()).getResponse().getStatus()).isEqualTo(401);
+        verify(users, times(1)).changeUserPassword(any());
+    }
+
+    @Test
+    void recoveryForEnrolledAccountRequiresBothVerifiedContactsAndDoesNotSignIn() throws Exception {
+        var enrolled = twoFactorAccount();
+        setUser(enrolled);
+        doReturn(new UserLoginInfo(enrolled, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+
+        String initiate = "/password/reset/initiate";
+        var decoy = call(initiate, Map.of("identifier", "missing@example.com"));
+        var real = call(initiate, Map.of("identifier", "user@example.com"));
+        assertThat(decoy.getResponse().getStatus()).isEqualTo(200);
+        assertThat(real.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(decoy).path("message")).isEqualTo(tree(real).path("message"));
+        assertThat(tree(decoy).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(tree(real).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(tree(real).path("data").has("passwordReset")).isFalse();
+        var emailCode = ArgumentCaptor.forClass(String.class);
+        verify(notifications, timeout(5000)).sendPasswordResetOtp(
+                eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), emailCode.capture());
+
+        String verify = "/password/reset/verify";
+        assertThat(call(verify, Map.of("mfaToken", tree(decoy).at("/data/challenge/mfaToken").asText(),
+                "otp", emailCode.getValue())).getResponse().getStatus()).isEqualTo(401);
+        var firstProof = Map.of("mfaToken", tree(real).at("/data/challenge/mfaToken").asText(), "otp", emailCode.getValue());
+        var second = call(verify, firstProof);
+        assertThat(second.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(second).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(tree(second).at("/data/challenge/channel").asText()).isEqualTo("SMS");
+        assertThat(tree(second).path("data").has("passwordReset")).isFalse();
+        assertThat(call(verify, firstProof).getResponse().getStatus()).isEqualTo(401);
+        var smsCode = ArgumentCaptor.forClass(String.class);
+        verify(notifications).sendPasswordResetOtp(eq(42L), eq(OtpChannel.SMS), eq("+989123456789"), smsCode.capture());
+        String secondToken = tree(second).at("/data/challenge/mfaToken").asText();
+        assertThat(call(verify, Map.of("mfaToken", secondToken, "otp", emailCode.getValue()))
+                .getResponse().getStatus()).isEqualTo(401);
+        var verified = call(verify, Map.of("mfaToken", secondToken, "otp", smsCode.getValue()));
+        assertThat(verified.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(verified).at("/data/step").asText()).isEqualTo("PASSWORD_RESET_REQUIRED");
+        String token = tree(verified).at("/data/passwordReset/passwordResetToken").asText();
+
+        when(users.changeUserPassword(any())).thenReturn(4L);
+        var update = Map.of("passwordResetToken", token, "newPassword", "different-password");
+        var reset = call("/password/reset/complete", update);
+        assertThat(reset.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(reset).at("/data/step").asText()).isEqualTo("PASSWORD_UPDATED_LOGIN_REQUIRED");
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(call("/password/reset/complete", update).getResponse().getStatus()).isEqualTo(401);
+        verify(users, times(1)).changeUserPassword(any());
+        verify(notifications).sendPasswordResetNotice(42);
+    }
+
+    private String assertPasswordChangeGrant(MvcResult result) throws Exception {
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(result.getResponse().getHeader("Cache-Control")).isEqualTo("no-store");
+        var data = tree(result).path("data");
+        assertThat(data.path("step").asText()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
+        assertThat(data.has("tokens")).isFalse();
+        assertThat(data.has("challenge")).isFalse();
+        assertThat(data.at("/passwordChange/expiresIn").asLong()).isEqualTo(300);
+        String token = data.at("/passwordChange/passwordChangeToken").asText();
+        assertThat(token).matches("[A-Za-z0-9_-]{43}");
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(refreshRepository.count()).isZero();
+        return token;
     }
 
     @Test
@@ -1450,6 +1658,11 @@ class LoginFlowIntegrationTest {
     private MvcResult call(String path, Map<String, String> body) throws Exception {
         return mvc.perform(post("/api/v1/auth" + path).contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(body))).andReturn();
+    }
+
+    private MvcResult call(String path, Map<String, String> body, String accessToken) throws Exception {
+        return mvc.perform(post("/api/v1/auth" + path).header("Authorization", "Bearer " + accessToken)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body))).andReturn();
     }
 
     private JsonNode tree(MvcResult result) throws Exception {

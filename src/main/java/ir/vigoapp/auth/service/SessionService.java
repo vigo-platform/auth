@@ -37,7 +37,7 @@ public class SessionService {
     private final AccessTokenService accessTokens;
     private final SecureTokens tokens;
     private final AuthProperties properties;
-    private final LoginProtectionService protection;
+    private final AuthProtectionService protection;
     private final Clock clock;
 
     @Transactional

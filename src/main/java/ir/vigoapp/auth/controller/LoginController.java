@@ -7,21 +7,14 @@ import ir.vigoapp.auth.dto.login.LoginResponse;
 import ir.vigoapp.auth.dto.login.PasswordLoginRequest;
 import ir.vigoapp.auth.dto.login.PhoneLoginRequest;
 import ir.vigoapp.auth.dto.login.VerifyLoginRequest;
-import ir.vigoapp.auth.dto.registration.RegisterRequest;
-import ir.vigoapp.auth.dto.registration.RegisterResponse;
 import ir.vigoapp.auth.dto.token.RefreshRequest;
 import ir.vigoapp.auth.dto.token.TokenResponse;
 import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.service.LoginService;
-import ir.vigoapp.auth.service.RegistrationService;
 import ir.vigoapp.auth.service.SessionService;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
@@ -29,29 +22,9 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/v1/auth")
 @RequiredArgsConstructor
-@Slf4j
 public class LoginController {
     private final LoginService login;
     private final SessionService sessions;
-    private final RegistrationService registration;
-
-    @ModelAttribute
-    public void prepareRequest(HttpServletRequest request, HttpServletResponse response) {
-        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
-        response.setHeader(HttpHeaders.PRAGMA, "no-cache");
-        var client = ClientInfo.from(request);
-        log.atInfo().addKeyValue("event", "auth_request_received")
-                .addKeyValue("http_method", request.getMethod()).addKeyValue("path", request.getRequestURI())
-                .addKeyValue("ip_address", client.ipAddress()).addKeyValue("user_agent", client.userAgent())
-                .addKeyValue("device_id", client.deviceId()).log("Authentication request received.");
-    }
-
-    @PostMapping("/register")
-    @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<RegisterResponse> register(@Valid @RequestBody RegisterRequest body, HttpServletRequest request) {
-        return ApiResponse.success("Account created successfully.", "حساب کاربری با موفقیت ایجاد شد.",
-                registration.register(body, ClientInfo.from(request)));
-    }
 
     @PostMapping("/login-password")
     public ApiResponse<LoginResponse> password(@Valid @RequestBody PasswordLoginRequest body, HttpServletRequest request) {

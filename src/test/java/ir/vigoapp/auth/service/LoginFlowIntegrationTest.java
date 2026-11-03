@@ -9,7 +9,6 @@ import ir.vigoapp.auth.client.user.UserGrpcClient;
 import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.client.user.model.UserLoginInfo;
-import ir.vigoapp.auth.client.user.model.CreateUserCommand;
 import ir.vigoapp.auth.config.AuthProperties;
 import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.login.VerifyLoginRequest;
@@ -21,6 +20,7 @@ import ir.vigoapp.auth.repository.AuthSessionRepository;
 import ir.vigoapp.auth.repository.RefreshTokenRepository;
 import ir.vigoapp.auth.scheduling.AuthStateCleanup;
 import ir.vigoapp.auth.security.SecureTokens;
+import ir.vigoapp.auth.support.AuthFlowTestConfiguration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,16 +33,12 @@ import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -77,7 +73,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "app.user-grpc.host=127.0.0.1", "app.user-grpc.port=50051"
 })
 @AutoConfigureMockMvc
-@Import(LoginFlowIntegrationTest.TestDoubles.class)
+@Import(AuthFlowTestConfiguration.class)
 class LoginFlowIntegrationTest {
     private static final ClientInfo CLIENT = new ClientInfo("127.0.0.1", "integration-test", "device-test");
     private static final String PASSWORD_HASH = new BCryptPasswordEncoder(4).encode("correct-password");
@@ -98,8 +94,7 @@ class LoginFlowIntegrationTest {
     @Autowired AuthSettingService settings;
     @Autowired NotificationService notifications;
     @Autowired Clock clock;
-    @Autowired LoginProtectionService protection;
-    @Autowired PasswordEncoder passwords;
+    @Autowired AuthProtectionService protection;
     private final AtomicReference<Instant> now = new AtomicReference<>();
     private UserAccount user;
     private final Logger auditLogger = (Logger) LoggerFactory.getLogger("ir.vigoapp.auth");
@@ -288,106 +283,6 @@ class LoginFlowIntegrationTest {
         String replacement = tree(response).at("/data/refreshToken").asText();
         assertThat(call("/logout", Map.of("refreshToken", replacement)).getResponse().getStatus()).isEqualTo(200);
         assertAllFamiliesRevoked();
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void registrationDisabledPreventsCreationRegardlessOfLoginSetting(boolean loginEnabled) throws Exception {
-        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder()
-                .loginEnabled(loginEnabled).registerEnabled(false).build());
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(503);
-        assertThat(tree(response).path("code").asText()).isEqualTo("REGISTRATION_DISABLED");
-        verifyNoInteractions(users, notifications, protection);
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void registrationNormalizesContactsHashesPasswordAndDoesNotAutoLogin(boolean loginEnabled) throws Exception {
-        captureAuditLogs();
-        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder().loginEnabled(loginEnabled).build());
-        var created = user.toBuilder().email("new@example.com").phone("09111111111")
-                .status(UserAccount.AccountStatus.PENDING_VERIFICATION).emailVerified(false).phoneVerified(false).build();
-        doReturn(created).when(users).createUser(any());
-        var response = call("/register", Map.of("email", " NEW@EXAMPLE.COM ", "phone", "00989111111111",
-                "password", "new-password", "firstName", "Test", "lastName", "User"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(201);
-        assertThat(response.getResponse().getHeader("Cache-Control")).isEqualTo("no-store");
-        assertThat(tree(response).at("/data/userId").asLong()).isEqualTo(42);
-        assertThat(tree(response).at("/data/status").asText()).isEqualTo("PENDING_VERIFICATION");
-        var command = ArgumentCaptor.forClass(CreateUserCommand.class);
-        verify(users).createUser(command.capture());
-        assertThat(command.getValue()).satisfies(value -> {
-            assertThat(value.email()).isEqualTo("new@example.com");
-            assertThat(value.phone()).isEqualTo("+989111111111");
-            assertThat(value.firstName()).isEqualTo("Test");
-            assertThat(value.lastName()).isEqualTo("User");
-            assertThat(value.passwordHash()).isNotEqualTo("new-password");
-            assertThat(passwords.matches("new-password", value.passwordHash())).isTrue();
-        });
-        assertThat(sessionRepository.count()).isZero();
-        verifyNoInteractions(notifications);
-        assertNoCredentialLogs("new-password", command.getValue().passwordHash(), "new@example.com");
-    }
-
-    @ParameterizedTest
-    @CsvSource({"email,new@example.com", "phone,09111111111"})
-    void registrationSupportsOneContactWithoutRequiringTheOther(String fieldName, String value) throws Exception {
-        var created = user.toBuilder().email(fieldName.equals("email") ? "new@example.com" : null)
-                .phone(fieldName.equals("phone") ? "+989111111111" : null).build();
-        doReturn(created).when(users).createUser(any());
-        assertThat(call("/register", Map.of(fieldName, value, "password", "new-password"))
-                .getResponse().getStatus()).isEqualTo(201);
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"{}", "{\"email\":\"new@example.com\",\"password\":\"short\"}",
-            "{\"password\":\"new-password\"}", "{\"email\":\"09111111111\",\"password\":\"new-password\"}",
-            "{\"phone\":\"new@example.com\",\"password\":\"new-password\"}",
-            "{\"email\":\" \",\"password\":\"new-password\"}"})
-    void invalidRegistrationCannotCreateAnAccountOrExposeThePassword(String body) throws Exception {
-        var result = mvc.perform(post("/api/v1/auth/register").contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isBadRequest()).andReturn();
-        assertThat(result.getResponse().getContentAsString()).doesNotContain("new-password", "short");
-        verifyNoInteractions(users, notifications);
-    }
-
-    @Test
-    void registrationRejectsOversizedUtf8PasswordsRatherThanTruncatingThem() throws Exception {
-        var result = call("/register", Map.of("email", "new@example.com", "password", "پ".repeat(37)));
-        assertThat(result.getResponse().getStatus()).isEqualTo(400);
-        assertThat(tree(result).path("code").asText()).isEqualTo("INVALID_PASSWORD_LENGTH");
-        verifyNoInteractions(users);
-    }
-
-    @ParameterizedTest
-    @CsvSource({"ALREADY_EXISTS,409,ACCOUNT_ALREADY_EXISTS", "INVALID_ARGUMENT,400,INVALID_REQUEST",
-            "TIMEOUT,503,AUTH_SERVICE_UNAVAILABLE", "UNAVAILABLE,503,AUTH_SERVICE_UNAVAILABLE"})
-    void registrationMapsUserServiceErrorsWithoutExposingCredentials(UserClientException.Code code, int status, String error) throws Exception {
-        doThrow(new UserClientException(code, "CreateUser")).when(users).createUser(any());
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(status);
-        assertThat(tree(response).path("code").asText()).isEqualTo(error);
-        assertThat(response.getResponse().getContentAsString()).doesNotContain("new-password");
-    }
-
-    @Test
-    void registrationRejectsAnUpstreamResponseWithADifferentIdentity() throws Exception {
-        doReturn(user).when(users).createUser(any());
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(503);
-        assertThat(tree(response).path("code").asText()).isEqualTo("AUTH_SERVICE_UNAVAILABLE");
-        assertThat(sessionRepository.count()).isZero();
-    }
-
-    @Test
-    void registrationUsesTheExistingIpLimit() throws Exception {
-        properties.setIpMaxRequests(1);
-        protection.checkIp(CLIENT);
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(429);
-        assertThat(tree(response).path("code").asText()).isEqualTo("RATE_LIMITED");
-        verifyNoInteractions(users);
     }
 
     @Test
@@ -1591,20 +1486,4 @@ class LoginFlowIntegrationTest {
 
     private record Challenge(String token, String code) {}
 
-    @TestConfiguration(proxyBeanMethods = false)
-    static class TestDoubles {
-        // The project's default Mockito maker supports interfaces only. Select subclass mocks locally.
-        @Bean @Primary UserGrpcClient testUsers() { return classMock(UserGrpcClient.class); }
-        @Bean @Primary AuthSettingService testSettings() { return classMock(AuthSettingService.class); }
-        @Bean @Primary NotificationService testNotifications() { return classMock(NotificationService.class); }
-        @Bean @Primary Clock testClock() { return classMock(Clock.class); }
-        @Bean @Primary
-        LoginProtectionService testProtection(StringRedisTemplate redis, AuthProperties properties, SecureTokens tokens) {
-            return mock(LoginProtectionService.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)
-                    .spiedInstance(new LoginProtectionService(redis, properties, tokens)).defaultAnswer(CALLS_REAL_METHODS));
-        }
-        private static <T> T classMock(Class<T> type) {
-            return mock(type, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
-        }
-    }
 }

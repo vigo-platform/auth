@@ -35,7 +35,7 @@ public class LoginService {
     private final UserGrpcClient users;
     private final AuthPolicyService policy;
     private final SessionService sessions;
-    private final LoginProtectionService protection;
+    private final AuthProtectionService protection;
     private final OtpChallengeRepository challenges;
     private final NotificationService notifications;
     private final SecureTokens tokens;
@@ -45,7 +45,7 @@ public class LoginService {
     private final String dummyPasswordHash;
 
     public LoginService(UserGrpcClient users, AuthPolicyService policy, SessionService sessions,
-                        LoginProtectionService protection, OtpChallengeRepository challenges,
+                        AuthProtectionService protection, OtpChallengeRepository challenges,
                         NotificationService notifications, SecureTokens tokens, PasswordEncoder passwords,
                         AuthProperties properties, Clock clock) {
         this.users = users;

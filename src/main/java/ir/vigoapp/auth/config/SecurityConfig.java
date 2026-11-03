@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -68,6 +69,12 @@ public class SecurityConfig {
                         .accessDeniedHandler(customAccessDeniedHandler)
                 )
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/auth/password/expired/complete",
+                                "/api/v1/auth/password/reset/initiate",
+                                "/api/v1/auth/password/reset/verify",
+                                "/api/v1/auth/password/reset/complete").permitAll()
+                        .requestMatchers("/api/v1/auth/password/**").authenticated()
                         .requestMatchers(publicEndpoints).permitAll()
                         .anyRequest().authenticated()
                 )

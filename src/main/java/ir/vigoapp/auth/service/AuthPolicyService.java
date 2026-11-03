@@ -13,6 +13,10 @@ import org.springframework.stereotype.Service;
 public class AuthPolicyService {
     private final AuthSettingService settings;
 
+    public boolean isLoginEnabled() {
+        return settings.getCurrent().loginEnabled();
+    }
+
     public AuthSettingDto requireLoginEnabled() {
         var current = settings.getCurrent();
         if (!current.loginEnabled()) {
@@ -23,10 +27,26 @@ public class AuthPolicyService {
     }
 
     public void requireRegistrationEnabled() {
-        if (!settings.getCurrent().registerEnabled()) {
+        requireRegistrationSettings();
+    }
+
+    public void requireRegistrationOtpEnabled(OtpChannel channel) {
+        var current = requireRegistrationSettings();
+        // A guest has no account or in-app destination yet.
+        if (channel != OtpChannel.EMAIL && channel != OtpChannel.SMS) {
+            throw new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "OTP_CHANNEL_DISABLED",
+                    "Registration requires email or SMS verification.", "تأیید ثبت‌نام باید از طریق ایمیل یا پیامک انجام شود.");
+        }
+        requireChannelEnabled(current, channel);
+    }
+
+    private AuthSettingDto requireRegistrationSettings() {
+        var current = settings.getCurrent();
+        if (!current.registerEnabled()) {
             throw new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "REGISTRATION_DISABLED",
                     "Registration is temporarily disabled.", "ثبت‌نام موقتاً غیرفعال است.");
         }
+        return current;
     }
 
     public void requireLoginOtpEnabled(OtpChannel channel) {
@@ -38,6 +58,16 @@ public class AuthPolicyService {
         var channel = current.defaultOtpChannel();
         requireChannelEnabled(current, channel);
         return channel;
+    }
+
+    public OtpChannel requireDefaultPasswordOtpChannel() {
+        var current = settings.getCurrent();
+        requireChannelEnabled(current, current.defaultOtpChannel());
+        return current.defaultOtpChannel();
+    }
+
+    public void requirePasswordOtpEnabled(OtpChannel channel) {
+        requireChannelEnabled(settings.getCurrent(), channel);
     }
 
     private void requireChannelEnabled(AuthSettingDto current, OtpChannel channel) {

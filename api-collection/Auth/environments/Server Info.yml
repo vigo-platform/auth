@@ -15,3 +15,45 @@ variables:
   - name: mfaToken
     value: ""
     description: "Copy from data.challenge.mfaToken"
+  - name: registrationIdentifier
+    value: new@example.com
+    description: "Email address or phone number to verify for registration"
+  - name: registrationMfaToken
+    value: ""
+    description: "Copy from registration initiate data.mfaToken; separate from login MFA"
+  - name: registrationOtp
+    value: ""
+    description: "Registration code delivered by the configured notification transport"
+  - name: registrationToken
+    value: ""
+    description: "Copy from registration verify data.registrationToken; valid for completion only"
+  - name: currentPassword
+    value: ""
+    description: "Current password for the account associated with accessToken"
+  - name: newPassword
+    value: ""
+    description: "New password for the selected flow. Use at least 8 characters and at most 72 UTF-8 bytes, different from the current password"
+  - name: expiredPasswordChangeToken
+    value: ""
+    description: "Copy data.passwordChange.passwordChangeToken from login or Verify Login OTP when data.step is PASSWORD_CHANGE_REQUIRED"
+  - name: passwordChangeMfaToken
+    value: ""
+    description: "Copy data.challenge.mfaToken from Initiate Password Change when data.step is OTP_REQUIRED"
+  - name: passwordChangeOtp
+    value: ""
+    description: "Code delivered for the signed-in password change"
+  - name: passwordChangeToken
+    value: ""
+    description: "Copy data.passwordChange.passwordChangeToken from Initiate Password Change or Verify Password Change OTP. Keep the same access-token session"
+  - name: passwordResetIdentifier
+    value: ""
+    description: "Verified email or phone number of the test account"
+  - name: passwordResetMfaToken
+    value: ""
+    description: "Copy data.challenge.mfaToken from Initiate Password Reset. If verification returns OTP_REQUIRED, replace it with the new challenge token and verify again"
+  - name: passwordResetOtp
+    value: ""
+    description: "Code delivered for the current reset challenge. Replace it when the second code is required"
+  - name: passwordResetToken
+    value: ""
+    description: "Copy data.passwordReset.passwordResetToken when Verify Password Reset OTP returns PASSWORD_RESET_REQUIRED"

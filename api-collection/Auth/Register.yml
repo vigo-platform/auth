@@ -1,16 +1,16 @@
 info:
-  name: Register
+  name: Registration Complete
   type: http
-  seq: 11
+  seq: 13
 
 http:
   method: POST
-  url: "{{baseUrl}}/api/v1/auth/register"
+  url: "{{baseUrl}}/api/v1/auth/register/complete"
   body:
     type: json
     data: |-
       {
-        "email": "new@example.com",
+        "registrationToken": "{{registrationToken}}",
         "password": "example-password",
         "firstName": "Test",
         "lastName": "User"

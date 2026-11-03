@@ -7,9 +7,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ir.vigoapp.auth.client.user.UserGrpcClient;
 import ir.vigoapp.auth.client.user.exception.UserClientException;
+import ir.vigoapp.auth.client.user.model.ChangePasswordCommand;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.client.user.model.UserLoginInfo;
-import ir.vigoapp.auth.client.user.model.CreateUserCommand;
 import ir.vigoapp.auth.config.AuthProperties;
 import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.login.VerifyLoginRequest;
@@ -21,6 +21,7 @@ import ir.vigoapp.auth.repository.AuthSessionRepository;
 import ir.vigoapp.auth.repository.RefreshTokenRepository;
 import ir.vigoapp.auth.scheduling.AuthStateCleanup;
 import ir.vigoapp.auth.security.SecureTokens;
+import ir.vigoapp.auth.support.AuthFlowTestConfiguration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,11 +34,8 @@ import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
@@ -77,7 +75,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "app.user-grpc.host=127.0.0.1", "app.user-grpc.port=50051"
 })
 @AutoConfigureMockMvc
-@Import(LoginFlowIntegrationTest.TestDoubles.class)
+@Import(AuthFlowTestConfiguration.class)
 class LoginFlowIntegrationTest {
     private static final ClientInfo CLIENT = new ClientInfo("127.0.0.1", "integration-test", "device-test");
     private static final String PASSWORD_HASH = new BCryptPasswordEncoder(4).encode("correct-password");
@@ -92,14 +90,14 @@ class LoginFlowIntegrationTest {
     @Autowired SecureTokens tokens;
     @Autowired AuthProperties properties;
     @Autowired JwtDecoder decoder;
+    @Autowired PasswordEncoder passwordEncoder;
     @Autowired StringRedisTemplate redis;
     @Autowired javax.sql.DataSource dataSource;
     @Autowired UserGrpcClient users;
     @Autowired AuthSettingService settings;
     @Autowired NotificationService notifications;
     @Autowired Clock clock;
-    @Autowired LoginProtectionService protection;
-    @Autowired PasswordEncoder passwords;
+    @Autowired AuthProtectionService protection;
     private final AtomicReference<Instant> now = new AtomicReference<>();
     private UserAccount user;
     private final Logger auditLogger = (Logger) LoggerFactory.getLogger("ir.vigoapp.auth");
@@ -285,109 +283,10 @@ class LoginFlowIntegrationTest {
         when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().defaultOtpChannel(OtpChannel.EMAIL).build());
         var response = call("/refresh", Map.of("refreshToken", pair.refreshToken()));
         assertThat(response.getResponse().getStatus()).isEqualTo(200);
-        String replacement = tree(response).at("/data/refreshToken").asText();
-        assertThat(call("/logout", Map.of("refreshToken", replacement)).getResponse().getStatus()).isEqualTo(200);
+        String accessToken = tree(response).at("/data/accessToken").asText();
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk());
         assertAllFamiliesRevoked();
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void registrationDisabledPreventsCreationRegardlessOfLoginSetting(boolean loginEnabled) throws Exception {
-        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder()
-                .loginEnabled(loginEnabled).registerEnabled(false).build());
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(503);
-        assertThat(tree(response).path("code").asText()).isEqualTo("REGISTRATION_DISABLED");
-        verifyNoInteractions(users, notifications, protection);
-    }
-
-    @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void registrationNormalizesContactsHashesPasswordAndDoesNotAutoLogin(boolean loginEnabled) throws Exception {
-        captureAuditLogs();
-        when(settings.getCurrent()).thenReturn(enabledSettings(OtpChannel.EMAIL).toBuilder().loginEnabled(loginEnabled).build());
-        var created = user.toBuilder().email("new@example.com").phone("09111111111")
-                .status(UserAccount.AccountStatus.PENDING_VERIFICATION).emailVerified(false).phoneVerified(false).build();
-        doReturn(created).when(users).createUser(any());
-        var response = call("/register", Map.of("email", " NEW@EXAMPLE.COM ", "phone", "00989111111111",
-                "password", "new-password", "firstName", "Test", "lastName", "User"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(201);
-        assertThat(response.getResponse().getHeader("Cache-Control")).isEqualTo("no-store");
-        assertThat(tree(response).at("/data/userId").asLong()).isEqualTo(42);
-        assertThat(tree(response).at("/data/status").asText()).isEqualTo("PENDING_VERIFICATION");
-        var command = ArgumentCaptor.forClass(CreateUserCommand.class);
-        verify(users).createUser(command.capture());
-        assertThat(command.getValue()).satisfies(value -> {
-            assertThat(value.email()).isEqualTo("new@example.com");
-            assertThat(value.phone()).isEqualTo("+989111111111");
-            assertThat(value.firstName()).isEqualTo("Test");
-            assertThat(value.lastName()).isEqualTo("User");
-            assertThat(value.passwordHash()).isNotEqualTo("new-password");
-            assertThat(passwords.matches("new-password", value.passwordHash())).isTrue();
-        });
-        assertThat(sessionRepository.count()).isZero();
-        verifyNoInteractions(notifications);
-        assertNoCredentialLogs("new-password", command.getValue().passwordHash(), "new@example.com");
-    }
-
-    @ParameterizedTest
-    @CsvSource({"email,new@example.com", "phone,09111111111"})
-    void registrationSupportsOneContactWithoutRequiringTheOther(String fieldName, String value) throws Exception {
-        var created = user.toBuilder().email(fieldName.equals("email") ? "new@example.com" : null)
-                .phone(fieldName.equals("phone") ? "+989111111111" : null).build();
-        doReturn(created).when(users).createUser(any());
-        assertThat(call("/register", Map.of(fieldName, value, "password", "new-password"))
-                .getResponse().getStatus()).isEqualTo(201);
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"{}", "{\"email\":\"new@example.com\",\"password\":\"short\"}",
-            "{\"password\":\"new-password\"}", "{\"email\":\"09111111111\",\"password\":\"new-password\"}",
-            "{\"phone\":\"new@example.com\",\"password\":\"new-password\"}",
-            "{\"email\":\" \",\"password\":\"new-password\"}"})
-    void invalidRegistrationCannotCreateAnAccountOrExposeThePassword(String body) throws Exception {
-        var result = mvc.perform(post("/api/v1/auth/register").contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isBadRequest()).andReturn();
-        assertThat(result.getResponse().getContentAsString()).doesNotContain("new-password", "short");
-        verifyNoInteractions(users, notifications);
-    }
-
-    @Test
-    void registrationRejectsOversizedUtf8PasswordsRatherThanTruncatingThem() throws Exception {
-        var result = call("/register", Map.of("email", "new@example.com", "password", "پ".repeat(37)));
-        assertThat(result.getResponse().getStatus()).isEqualTo(400);
-        assertThat(tree(result).path("code").asText()).isEqualTo("INVALID_PASSWORD_LENGTH");
-        verifyNoInteractions(users);
-    }
-
-    @ParameterizedTest
-    @CsvSource({"ALREADY_EXISTS,409,ACCOUNT_ALREADY_EXISTS", "INVALID_ARGUMENT,400,INVALID_REQUEST",
-            "TIMEOUT,503,AUTH_SERVICE_UNAVAILABLE", "UNAVAILABLE,503,AUTH_SERVICE_UNAVAILABLE"})
-    void registrationMapsUserServiceErrorsWithoutExposingCredentials(UserClientException.Code code, int status, String error) throws Exception {
-        doThrow(new UserClientException(code, "CreateUser")).when(users).createUser(any());
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(status);
-        assertThat(tree(response).path("code").asText()).isEqualTo(error);
-        assertThat(response.getResponse().getContentAsString()).doesNotContain("new-password");
-    }
-
-    @Test
-    void registrationRejectsAnUpstreamResponseWithADifferentIdentity() throws Exception {
-        doReturn(user).when(users).createUser(any());
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(503);
-        assertThat(tree(response).path("code").asText()).isEqualTo("AUTH_SERVICE_UNAVAILABLE");
-        assertThat(sessionRepository.count()).isZero();
-    }
-
-    @Test
-    void registrationUsesTheExistingIpLimit() throws Exception {
-        properties.setIpMaxRequests(1);
-        protection.checkIp(CLIENT);
-        var response = call("/register", Map.of("email", "new@example.com", "password", "new-password"));
-        assertThat(response.getResponse().getStatus()).isEqualTo(429);
-        assertThat(tree(response).path("code").asText()).isEqualTo("RATE_LIMITED");
-        verifyNoInteractions(users);
     }
 
     @Test
@@ -834,7 +733,6 @@ class LoginFlowIntegrationTest {
         assertThat(call("/refresh", Map.of("refreshToken", next.path("refreshToken").asText())).getResponse().getStatus()).isEqualTo(401);
         assertThat(sessionRepository.findAll().getFirst().getRevokedReason()).isEqualTo("REFRESH_REUSE");
         assertAllFamiliesRevoked();
-        assertThat(sessions.isAccessSessionActive(decoder.decode(next.path("accessToken").asText()))).isFalse();
     }
 
     @Test
@@ -851,15 +749,27 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void logoutUsingAnAncestorRevokesItsDescendantAndAccessTokens() throws Exception {
+    void logoutRevokesOnlyItsRefreshFamilyAndAcceptsTheSameAccessTokenUntilExpiry() throws Exception {
         var pair = createSession();
+        var other = createSession();
         var next = sessions.refresh(pair.refreshToken(), CLIENT);
-        assertThat(call("/logout", Map.of("refreshToken", pair.refreshToken())).getResponse().getStatus()).isEqualTo(200);
-        assertThat(call("/logout", Map.of("refreshToken", pair.refreshToken())).getResponse().getStatus()).isEqualTo(200);
+        mvc.perform(post("/api/v1/auth/logout")).andExpect(status().isUnauthorized());
+        assertThat(call("/logout", Map.of("refreshToken", next.refreshToken())).getResponse().getStatus()).isEqualTo(401);
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + next.refreshToken()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + pair.accessToken()))
+                .andExpect(status().isOk());
+        var loggedOutSession = decoder.decode(pair.accessToken()).getClaimAsString("sid");
+        assertThat(refreshRepository.findAll())
+                .filteredOn(token -> token.getSession().getId().toString().equals(loggedOutSession))
+                .hasSize(2).allSatisfy(token -> {
+                    assertThat(token.isActive()).isFalse();
+                    assertThat(token.getRevokedAt()).isNotNull();
+                });
         assertThat(call("/refresh", Map.of("refreshToken", next.refreshToken())).getResponse().getStatus()).isEqualTo(401);
-        assertAllFamiliesRevoked();
-        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + next.accessToken()))
-                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+        assertThat(call("/refresh", Map.of("refreshToken", other.refreshToken())).getResponse().getStatus()).isEqualTo(200);
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + pair.accessToken()))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -867,11 +777,15 @@ class LoginFlowIntegrationTest {
         mvc.perform(post("/api/v1/auth/logout-all")).andExpect(status().isUnauthorized());
         var first = createSession();
         var second = createSession();
+        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + first.refreshToken()))
+                .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + first.accessToken()))
                 .andExpect(status().isOk());
         assertThat(sessionRepository.findAll()).allSatisfy(session -> assertThat(session.getRevokedAt()).isNotNull());
-        assertThat(sessions.isAccessSessionActive(decoder.decode(second.accessToken()))).isFalse();
         assertAllFamiliesRevoked();
+        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + second.accessToken()))
+                .andExpect(status().isOk());
+        assertThat(call("/refresh", Map.of("refreshToken", second.refreshToken())).getResponse().getStatus()).isEqualTo(401);
     }
 
     @Test
@@ -909,7 +823,6 @@ class LoginFlowIntegrationTest {
             var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
             assertThat(token.isActive()).isFalse();
             assertThat(token.getRevokedAt()).isNotNull();
-            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isFalse();
         }
         assertThat(refreshRepository.findByTokenHash(tokens.hash(old.refreshToken())).orElseThrow()
                 .getConsumedAt()).isNotNull();
@@ -917,7 +830,6 @@ class LoginFlowIntegrationTest {
             var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
             assertThat(token.isActive()).isTrue();
             assertThat(token.getRevokedAt()).isNull();
-            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isTrue();
             assertThat(call("/refresh", Map.of("refreshToken", pair.refreshToken()))
                     .getResponse().getStatus()).isEqualTo(200);
         }
@@ -939,7 +851,6 @@ class LoginFlowIntegrationTest {
             var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
             assertThat(token.isActive()).isTrue();
             assertThat(token.getRevokedAt()).isNull();
-            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isTrue();
         }
     }
 
@@ -948,14 +859,13 @@ class LoginFlowIntegrationTest {
     void ineligibleAccountStillRevokesAllCredentialVersions(UserAccount.AccountStatus status, boolean expired)
             throws Exception {
         var old = createSession();
-        var current = sessions.create(account(UserAccount.AccountStatus.ACTIVE, 4, false, true), CLIENT);
+        sessions.create(account(UserAccount.AccountStatus.ACTIVE, 4, false, true), CLIENT);
         setUser(account(status, 4, expired, true));
 
         assertThat(call("/refresh", Map.of("refreshToken", old.refreshToken()))
                 .getResponse().getStatus()).isEqualTo(401);
 
         assertAllFamiliesRevoked();
-        assertThat(sessions.isAccessSessionActive(decoder.decode(current.accessToken()))).isFalse();
     }
 
     @Test
@@ -1012,7 +922,8 @@ class LoginFlowIntegrationTest {
         var first = createSession();
         sessions.refresh(first.refreshToken(), CLIENT);
         var loggedOut = createSession();
-        sessions.logout(loggedOut.refreshToken(), CLIENT);
+        var jwt = decoder.decode(loggedOut.accessToken());
+        sessions.logout(java.util.UUID.fromString(jwt.getClaimAsString("sid")), Long.parseLong(jwt.getSubject()), CLIENT);
         var originalTokens = refreshRepository.findAll();
         var consumedAt = originalTokens.stream().filter(t -> t.getConsumedAt() != null)
                 .findFirst().orElseThrow().getConsumedAt();
@@ -1054,13 +965,10 @@ class LoginFlowIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    void eitherSessionRevocationSignalRejectsAccessAndRefresh(boolean flagOnly) throws Exception {
+    void eitherSessionRevocationSignalRejectsRefresh(boolean flagOnly) throws Exception {
         var pair = createSession();
         var sessionId = refreshRepository.findSessionIdByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
         setRevocationState("auth_sessions", sessionId, flagOnly);
-        assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isFalse();
-        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + pair.accessToken()))
-                .andExpect(status().isUnauthorized());
         clearInvocations(users);
         assertThatThrownBy(() -> sessions.refresh(pair.refreshToken(), CLIENT)).isInstanceOf(AuthException.class);
         verify(users, never()).getUserById(anyLong());
@@ -1129,13 +1037,11 @@ class LoginFlowIntegrationTest {
     @ValueSource(booleans = {true, false})
     void exactExpiryBoundaryRejectsEvenWhenRevocationFlagsAreFalse(boolean sessionExpiry) {
         var pair = createSession();
-        var jwt = decoder.decode(pair.accessToken());
         var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
         var session = sessionRepository.findAll().getFirst();
         assertThat(token.isActive()).isTrue();
         assertThat(session.isRevoked()).isFalse();
         now.set(sessionExpiry ? session.getExpiresAt() : token.getExpiresAt());
-        if (sessionExpiry) assertThat(sessions.isAccessSessionActive(jwt)).isFalse();
         assertThatThrownBy(() -> sessions.refresh(pair.refreshToken(), CLIENT)).isInstanceOf(AuthException.class);
         assertAllFamiliesRevoked();
         assertThat(refreshRepository.findById(token.getId()).orElseThrow().getConsumedAt()).isNull();
@@ -1190,15 +1096,220 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void unverifiedContactAndExpiredCredentialsCannotReceiveOtp() throws Exception {
-        setUser(account(UserAccount.AccountStatus.ACTIVE, 3, false, false));
+    void unverifiedContactCannotReceiveOtpEvenWhenCredentialsAreExpired() throws Exception {
+        setUser(account(UserAccount.AccountStatus.ACTIVE, 3, true, false));
         call("/login-otp-email", Map.of("email", "user@example.com"));
         verifyNoInteractions(notifications);
-        clearCooldown();
+    }
+
+    @Test
+    void expiredPasswordOnlyLoginRequiresCorrectPasswordBeforeIssuingChangeGrant() throws Exception {
         setUser(account(UserAccount.AccountStatus.ACTIVE, 3, true, true));
-        assertThat(password("user@example.com", "correct-password").getResponse().getStatus()).isEqualTo(401);
-        call("/login-otp-email", Map.of("email", "user@example.com"));
+        assertThat(password("user@example.com", "wrong-password").getResponse().getStatus()).isEqualTo(401);
+        assertPasswordChangeGrant(password("user@example.com", "correct-password"));
         verifyNoInteractions(notifications);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void expiredLoginOtpIssuesChangeGrantOnlyAfterSuccessfulVerification(boolean twoFactorEnabled) throws Exception {
+        setUser(account(UserAccount.AccountStatus.ACTIVE, 3, true, true).toBuilder()
+                .twoFactorEnabled(twoFactorEnabled).build());
+        var started = twoFactorEnabled
+                ? password("user@example.com", "correct-password")
+                : call("/login-otp-email", Map.of("email", "user@example.com"));
+        var data = tree(started).path("data");
+        assertThat(data.path("step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(data.has("tokens")).isFalse();
+        assertThat(data.has("passwordChange")).isFalse();
+        String mfaToken = data.at("/challenge/mfaToken").asText();
+        var challenge = challenges.find(mfaToken).orElseThrow();
+        verify(notifications).sendLoginOtp(42, OtpChannel.EMAIL, "user@example.com", challenge.code());
+        String incorrect = challenge.code().equals("000000") ? "000001" : "000000";
+        assertThat(verifyOtp(mfaToken, incorrect).getResponse().getStatus()).isEqualTo(401);
+        assertPasswordChangeGrant(verifyOtp(mfaToken, challenge.code()));
+        assertThat(verifyOtp(mfaToken, challenge.code()).getResponse().getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void expiredLoginCompletionValidatesPasswordAndIssuesSessionForNewVersionOnce() throws Exception {
+        var expired = account(UserAccount.AccountStatus.ACTIVE, 3, true, true);
+        var updated = expired.toBuilder().credentialVersion(4).credentialsExpired(false).build();
+        setUser(expired);
+        doReturn(new UserLoginInfo(expired, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+        String token = assertPasswordChangeGrant(password("user@example.com", "correct-password"));
+        String route = "/password/expired/complete";
+        String newPassword = "different-password";
+
+        var invalid = call(route, Map.of("passwordChangeToken", token, "newPassword", "ش".repeat(37)));
+        assertThat(invalid.getResponse().getStatus()).isEqualTo(400);
+        verify(users, never()).changeUserPassword(any());
+        when(users.changeUserPassword(any())).thenAnswer(invocation -> {
+            ChangePasswordCommand command = invocation.getArgument(0);
+            assertThat(command.userId()).isEqualTo(42);
+            assertThat(command.expectedCredentialVersion()).isEqualTo(3);
+            assertThat(passwordEncoder.matches(newPassword, command.newPasswordHash())).isTrue();
+            doReturn(updated).when(users).getUserById(42);
+            return 4L;
+        });
+
+        var result = call(route, Map.of("passwordChangeToken", token, "newPassword", newPassword));
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        var data = tree(result).path("data");
+        assertThat(data.path("step").asText()).isEqualTo("SUCCESS");
+        Number credentialVersion = decoder.decode(data.at("/tokens/accessToken").asText()).getClaim("credential_version");
+        assertThat(credentialVersion.longValue()).isEqualTo(4);
+        assertThat(sessionRepository.findAll()).singleElement().satisfies(session ->
+                assertThat(session.getCredentialVersion()).isEqualTo(4));
+        assertThat(call(route, Map.of("passwordChangeToken", token, "newPassword", newPassword))
+                .getResponse().getStatus()).isEqualTo(401);
+        verify(users, times(1)).changeUserPassword(any());
+    }
+
+    @Test
+    void ambiguousPasswordUpdateKeepsGrantClaimedAndDoesNotRetryMutation() throws Exception {
+        var expired = account(UserAccount.AccountStatus.ACTIVE, 3, true, true);
+        setUser(expired);
+        doReturn(new UserLoginInfo(expired, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+        String token = assertPasswordChangeGrant(password("user@example.com", "correct-password"));
+        var update = Map.of("passwordChangeToken", token, "newPassword", "different-password");
+        when(users.changeUserPassword(any()))
+                .thenThrow(new UserClientException(UserClientException.Code.TIMEOUT, "ChangeUserPassword"));
+
+        var result = call("/password/expired/complete", update);
+        assertThat(result.getResponse().getStatus()).isEqualTo(503);
+        assertThat(tree(result).path("code").asText()).isEqualTo("PASSWORD_UPDATE_OUTCOME_UNKNOWN");
+        assertThat(call("/password/expired/complete", update).getResponse().getStatus()).isEqualTo(409);
+        assertThat(sessionRepository.count()).isZero();
+        verify(users, times(1)).changeUserPassword(any());
+    }
+
+    @Test
+    void confirmedPasswordUpdateWithUnclearedExpiryRequiresFreshLogin() throws Exception {
+        var expired = account(UserAccount.AccountStatus.ACTIVE, 3, true, true);
+        setUser(expired);
+        doReturn(new UserLoginInfo(expired, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+        String token = assertPasswordChangeGrant(password("user@example.com", "correct-password"));
+        when(users.changeUserPassword(any())).thenReturn(4L);
+        when(users.getUserById(42)).thenReturn(expired.toBuilder().credentialVersion(4).build());
+
+        var update = Map.of("passwordChangeToken", token, "newPassword", "different-password");
+        var result = call("/password/expired/complete", update);
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(result).at("/data/step").asText()).isEqualTo("PASSWORD_UPDATED_LOGIN_REQUIRED");
+        assertThat(tree(result).path("data").has("tokens")).isFalse();
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(call("/password/expired/complete", update).getResponse().getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void signedInPasswordChangeRequiresReauthenticationAndStaysBoundToItsSession() throws Exception {
+        var primary = createSession();
+        var other = createSession();
+        var enrolled = twoFactorAccount();
+        setUser(enrolled);
+        doReturn(new UserLoginInfo(enrolled, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+
+        String initiate = "/password/change/initiate";
+        var current = Map.of("currentPassword", "correct-password");
+        assertThat(call(initiate, current).getResponse().getStatus()).isEqualTo(401);
+        assertThat(call(initiate, Map.of("currentPassword", "wrong-password"), primary.accessToken())
+                .getResponse().getStatus()).isEqualTo(401);
+        var started = call(initiate, current, primary.accessToken());
+        assertThat(started.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(started).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        var otp = ArgumentCaptor.forClass(String.class);
+        verify(notifications).sendPasswordChangeOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), otp.capture());
+        String verify = "/password/change/verify";
+        var proof = Map.of("mfaToken", tree(started).at("/data/challenge/mfaToken").asText(), "otp", otp.getValue());
+        assertThat(call(verify, proof, other.accessToken()).getResponse().getStatus()).isEqualTo(401);
+        var verified = call(verify, proof, primary.accessToken());
+        assertThat(verified.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(verified).at("/data/step").asText()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
+        String token = tree(verified).at("/data/passwordChange/passwordChangeToken").asText();
+
+        String complete = "/password/change/complete";
+        var update = Map.of("passwordChangeToken", token, "newPassword", "different-password");
+        assertThat(call(complete, update, other.accessToken()).getResponse().getStatus()).isEqualTo(401);
+        assertThat(call("/password/expired/complete", update).getResponse().getStatus()).isEqualTo(401);
+        var reused = call(complete, Map.of("passwordChangeToken", token, "newPassword", "correct-password"),
+                primary.accessToken());
+        assertThat(reused.getResponse().getStatus()).isEqualTo(400);
+        assertThat(tree(reused).path("code").asText()).isEqualTo("PASSWORD_REUSED");
+        verify(users, never()).changeUserPassword(any());
+        when(users.changeUserPassword(any())).thenReturn(4L);
+        var changed = call(complete, update, primary.accessToken());
+        assertThat(changed.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(changed).at("/data/step").asText()).isEqualTo("PASSWORD_UPDATED_LOGIN_REQUIRED");
+        assertThat(tree(changed).path("data").has("tokens")).isFalse();
+        assertAllFamiliesRevoked();
+        assertThat(call(initiate, current, primary.accessToken()).getResponse().getStatus()).isEqualTo(401);
+        verify(users, times(1)).changeUserPassword(any());
+    }
+
+    @Test
+    void recoveryForEnrolledAccountRequiresBothVerifiedContactsAndDoesNotSignIn() throws Exception {
+        var enrolled = twoFactorAccount();
+        setUser(enrolled);
+        doReturn(new UserLoginInfo(enrolled, PASSWORD_HASH)).when(users).getLoginInfoById(42);
+
+        String initiate = "/password/reset/initiate";
+        var decoy = call(initiate, Map.of("identifier", "missing@example.com"));
+        var real = call(initiate, Map.of("identifier", "user@example.com"));
+        assertThat(decoy.getResponse().getStatus()).isEqualTo(200);
+        assertThat(real.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(decoy).path("message")).isEqualTo(tree(real).path("message"));
+        assertThat(tree(decoy).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(tree(real).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(tree(real).path("data").has("passwordReset")).isFalse();
+        var emailCode = ArgumentCaptor.forClass(String.class);
+        verify(notifications, timeout(5000)).sendPasswordResetOtp(
+                eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), emailCode.capture());
+
+        String verify = "/password/reset/verify";
+        assertThat(call(verify, Map.of("mfaToken", tree(decoy).at("/data/challenge/mfaToken").asText(),
+                "otp", emailCode.getValue())).getResponse().getStatus()).isEqualTo(401);
+        var firstProof = Map.of("mfaToken", tree(real).at("/data/challenge/mfaToken").asText(), "otp", emailCode.getValue());
+        var second = call(verify, firstProof);
+        assertThat(second.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(second).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
+        assertThat(tree(second).at("/data/challenge/channel").asText()).isEqualTo("SMS");
+        assertThat(tree(second).path("data").has("passwordReset")).isFalse();
+        assertThat(call(verify, firstProof).getResponse().getStatus()).isEqualTo(401);
+        var smsCode = ArgumentCaptor.forClass(String.class);
+        verify(notifications).sendPasswordResetOtp(eq(42L), eq(OtpChannel.SMS), eq("+989123456789"), smsCode.capture());
+        String secondToken = tree(second).at("/data/challenge/mfaToken").asText();
+        assertThat(call(verify, Map.of("mfaToken", secondToken, "otp", emailCode.getValue()))
+                .getResponse().getStatus()).isEqualTo(401);
+        var verified = call(verify, Map.of("mfaToken", secondToken, "otp", smsCode.getValue()));
+        assertThat(verified.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(verified).at("/data/step").asText()).isEqualTo("PASSWORD_RESET_REQUIRED");
+        String token = tree(verified).at("/data/passwordReset/passwordResetToken").asText();
+
+        when(users.changeUserPassword(any())).thenReturn(4L);
+        var update = Map.of("passwordResetToken", token, "newPassword", "different-password");
+        var reset = call("/password/reset/complete", update);
+        assertThat(reset.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(reset).at("/data/step").asText()).isEqualTo("PASSWORD_UPDATED_LOGIN_REQUIRED");
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(call("/password/reset/complete", update).getResponse().getStatus()).isEqualTo(401);
+        verify(users, times(1)).changeUserPassword(any());
+        verify(notifications).sendPasswordResetNotice(42);
+    }
+
+    private String assertPasswordChangeGrant(MvcResult result) throws Exception {
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        assertThat(result.getResponse().getHeader("Cache-Control")).isEqualTo("no-store");
+        var data = tree(result).path("data");
+        assertThat(data.path("step").asText()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
+        assertThat(data.has("tokens")).isFalse();
+        assertThat(data.has("challenge")).isFalse();
+        assertThat(data.at("/passwordChange/expiresIn").asLong()).isEqualTo(300);
+        String token = data.at("/passwordChange/passwordChangeToken").asText();
+        assertThat(token).matches("[A-Za-z0-9_-]{43}");
+        assertThat(sessionRepository.count()).isZero();
+        assertThat(refreshRepository.count()).isZero();
+        return token;
     }
 
     @Test
@@ -1549,6 +1660,11 @@ class LoginFlowIntegrationTest {
                 .content(json.writeValueAsString(body))).andReturn();
     }
 
+    private MvcResult call(String path, Map<String, String> body, String accessToken) throws Exception {
+        return mvc.perform(post("/api/v1/auth" + path).header("Authorization", "Bearer " + accessToken)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body))).andReturn();
+    }
+
     private JsonNode tree(MvcResult result) throws Exception {
         return json.readTree(result.getResponse().getContentAsString());
     }
@@ -1591,20 +1707,4 @@ class LoginFlowIntegrationTest {
 
     private record Challenge(String token, String code) {}
 
-    @TestConfiguration(proxyBeanMethods = false)
-    static class TestDoubles {
-        // The project's default Mockito maker supports interfaces only. Select subclass mocks locally.
-        @Bean @Primary UserGrpcClient testUsers() { return classMock(UserGrpcClient.class); }
-        @Bean @Primary AuthSettingService testSettings() { return classMock(AuthSettingService.class); }
-        @Bean @Primary NotificationService testNotifications() { return classMock(NotificationService.class); }
-        @Bean @Primary Clock testClock() { return classMock(Clock.class); }
-        @Bean @Primary
-        LoginProtectionService testProtection(StringRedisTemplate redis, AuthProperties properties, SecureTokens tokens) {
-            return mock(LoginProtectionService.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)
-                    .spiedInstance(new LoginProtectionService(redis, properties, tokens)).defaultAnswer(CALLS_REAL_METHODS));
-        }
-        private static <T> T classMock(Class<T> type) {
-            return mock(type, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
-        }
-    }
 }

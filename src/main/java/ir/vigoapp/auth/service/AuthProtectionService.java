@@ -14,10 +14,11 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+/** Shared request limits, failure locks and OTP cooldowns for authentication workflows. */
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class LoginProtectionService {
+public class AuthProtectionService {
     private static final DefaultRedisScript<Long> REQUEST_LIMIT = script("request-limit.lua");
     private static final DefaultRedisScript<Long> FAILURE = script("login-failure.lua");
     private static final DefaultRedisScript<Long> LOCK = script("login-lock.lua");
@@ -85,7 +86,7 @@ public class LoginProtectionService {
         return reserveCooldown(accountKey(userId));
     }
 
-    private long reserveCooldown(String key) {
+    public long reserveCooldown(String key) {
         return execute(COOLDOWN, "auth:otp-cooldown:" + key, Long.toString(properties.getOtpCooldown().toMillis()));
     }
 

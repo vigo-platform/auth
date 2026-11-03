@@ -6,16 +6,19 @@ All endpoints use `/api/v1/auth` and the project's `ApiResponse`: `success`, opt
 
 | Method/path | JSON body | Result |
 | --- | --- | --- |
-| `POST /register` | `{"email":"new@example.com","password":"...","phone":"09123456789","firstName":"...","lastName":"..."}` | HTTP 201 with `userId` and User-owned account `status`; email or phone is required, names are optional; no tokens |
-| `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, or an OTP challenge when account two-factor authentication or global password OTP is enabled |
+| `POST /register/initiate` | `{"identifier":"new@example.com"}` or a mobile number | Registration OTP challenge; see [registration](registration.md) |
+| `POST /register/verify` | `{"mfaToken":"...","otp":"012345"}` | A temporary `registrationToken`; no account or login tokens |
+| `POST /register/complete` | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId`, User-owned `status` and `tokens` when sign-in is available |
+| `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, OTP challenge, or password change continuation |
 | `POST /login-otp-email` | `{"email":"user@example.com"}` | Generic OTP challenge response |
 | `POST /login-otp-phone` | `{"phone":"09123456789"}` | Generic SMS challenge response |
-| `POST /verify` | `{"mfaToken":"...","otp":"012345"}` | Consumes the login challenge and issues a token pair |
+| `POST /verify` | `{"mfaToken":"...","otp":"012345"}` | Consumes the login challenge and issues a token pair or password change continuation |
+| `POST /password/expired/complete` | `{"passwordChangeToken":"...","newPassword":"..."}` | Updates an expired password and completes sign-in when the account still qualifies |
 | `POST /refresh` | `{"refreshToken":"..."}` | Atomically consumes the refresh token and returns its replacement plus a new access token |
-| `POST /logout` | `{"refreshToken":"..."}` | Idempotently revokes the entire session, including when given a consumed ancestor |
-| `POST /logout-all` | None; `Authorization: Bearer <accessToken>` required | Revokes all sessions for the verified JWT subject |
+| `POST /logout` | None. Requires `Authorization: Bearer <accessToken>` | Revokes the session identified by the verified JWT `sid` and all its refresh tokens |
+| `POST /logout-all` | None. Requires `Authorization: Bearer <accessToken>` | Revokes all sessions for the verified JWT subject |
 
-Registration, login, OTP verification, refresh and logout are explicitly public. `/logout-all` requires a valid access token and active session; there is no public `/auth/**` wildcard. Refresh tokens are credentials and are sent in the JSON body, never a URL. The API does not set authentication cookies.
+Registration, login, OTP verification, expired-password completion and refresh are explicitly public. Both logout endpoints require a valid access token. Logout revokes refresh tokens. An issued access token stays valid until its expiration and can still authenticate requests, including logout. Send refresh tokens in the JSON body of `/refresh`. The API does not set authentication cookies.
 
 Request aliases `refresh_token`, `mfa_token`, and `mfa` are accepted for the corresponding camelCase fields. Responses use camelCase data fields. Emails are stripped and lowercased. Iranian local, `0098` and `+98` phone variants normalize to E.164 `+989…`; other international phone numbers must already be E.164. Passwords are never trimmed; bcrypt inputs exceeding 72 UTF-8 bytes are rejected rather than silently truncated. Raw bcrypt and Spring `{bcrypt}` hashes are supported.
 
@@ -51,7 +54,7 @@ OTP initiation returns `data.step = "OTP_REQUIRED"` and `data.challenge = {"mfaT
 
 ## Authentication rules
 
-The User service remains the owner of users, bcrypt hashes, roles, status, verified contacts and credential versions. Auth uses the existing `UserGrpcClient`; no user table or raw SQL data access is added. `UNKNOWN`, pending, suspended, deactivated and credential-expired accounts cannot log in. OTP delivery requires the selected verified email/phone. OTP verification and refresh re-fetch the account and check eligibility and `credentialVersion` before issuing tokens. Verification also checks the challenge's stored delivery destination, so changing an email/phone invalidates previously sent codes. Returned user IDs/lookup identifiers must match the requested identity. User service timeouts/unavailability return 503 without consuming the OTP or refresh token.
+The User service remains the owner of users, bcrypt hashes, roles, status, verified contacts and credential versions. Auth uses the existing `UserGrpcClient`; no user table or raw SQL data access is added. `UNKNOWN`, pending, suspended and deactivated accounts cannot log in. An active account with expired credentials must verify all required login factors before receiving a password change continuation. OTP delivery requires the selected verified email/phone. OTP verification and refresh re-fetch the account and check eligibility and `credentialVersion` before issuing tokens. Verification also checks the challenge's stored delivery destination, so changing an email/phone invalidates previously sent codes. Returned user IDs/lookup identifiers must match the requested identity. User service timeouts/unavailability return 503 without consuming the OTP or refresh token.
 
 When refresh detects a credential-version mismatch for an otherwise eligible account,
 it rejects the request and revokes only sessions and refresh tokens with credential
@@ -60,22 +63,22 @@ remain valid, so an old device cannot log out a session created after a password
 change. An ineligible account still causes all of that user's sessions and refresh
 tokens to be revoked, regardless of credential version.
 
-`AuthPolicyService` enforces `loginEnabled` for password login, OTP initiation and
-verification. Each channel's `*NotificationEnabled` switch gates both creation and
+`AuthPolicyService` enforces `loginEnabled` for password login, OTP initiation,
+verification and session creation after registration. Each channel's
+`*NotificationEnabled` switch gates both creation and
 verification of its authentication challenges. A disabled channel returns 503
 `OTP_CHANNEL_DISABLED` and never falls back to password-only login. Existing sessions
 may still refresh or log out while new logins/channels are disabled. See
 [runtime settings](auth-settings.md) for propagation and default-channel behavior.
 
-`registerEnabled` independently gates `/register` with 503 `REGISTRATION_DISABLED`.
-Registration normalizes the supplied email/phone, validates an 8-character minimum
-and 72 UTF-8-byte maximum password, bcrypt-encodes it and calls User's `CreateUser`
-RPC. It supports email-only, phone-only or both contacts. Duplicate accounts return
-409 `ACCOUNT_ALREADY_EXISTS`; invalid upstream registration details return 400;
-dependency outages return 503. Registration shares the IP rate limit. Auth does not
-activate the created account, mark contacts verified, issue tokens, or add a new
-verification RPC. A `PENDING_VERIFICATION` account still needs the User service's
-verification/activation flow before it can log in.
+`registerEnabled` independently gates every registration stage with 503
+`REGISTRATION_DISABLED`. Registration now requires an email/SMS OTP before account
+creation. Channel switches, identifier cooldown/failure policies and the IP limit
+also apply. Only the contact proven by registration can reach `CreateUser`. User's
+current deployment creates the account active and verified. `/register/complete`
+uses the same session and token flow as login for eligible accounts when login is enabled.
+See [registration](registration.md) for request bodies, Redis state, delivery
+integration and retry behavior.
 
 User contract 3.1.0 supplies the per-account `two_factor_enabled` flag. After a correct password, Auth requires OTP when this flag is `true` **or** `AUTH_PASSWORD_OTP_REQUIRED=true`. The global flag defaults to `false` and cannot disable an account's two-factor policy. Both policies use the current settings' `defaultOtpChannel`. No session or access/refresh token is created before successful OTP verification. If the selected channel has no verified destination, login fails with the generic `INVALID_CREDENTIALS` response; it never falls back to password alone. `IN_APP` is only selectable for the password follow-up challenge, and its destination is the user ID.
 
@@ -87,23 +90,20 @@ Two-factor audit events use the existing structured logging setup. `login_second
 
 Deploy User 3.1.0 support before this Auth version: omitted proto3 booleans default to `false`. Roll out this Auth version across all instances together, since older instances do not enforce the new flag. Existing Redis challenges without `passwordVerified` are treated as having no password proof: two-factor accounts must start a fresh password login; accounts without two-factor authentication can complete their existing OTP challenges. No SQL migration or Redis flush is required. Existing sessions retain their refresh behavior; enabling two-factor authentication controls new logins and does not by itself revoke sessions.
 
-## TODO: expired credentials after authentication
+## Expired credentials after authentication
 
-Deferred until the registration and `change_password` workflows are completed:
-
-- Do not use `credentialsExpired` to reject password verification, OTP issuance or
-  OTP delivery. Continue to enforce account status, verified contacts, lockout and 2FA.
-- Check expiry only after a correct password for password-only login, after a
-  correct password and OTP for 2FA, or after a correct OTP for passwordless login.
-- At the final gate before normal session/token creation, require an expired user
-  to choose a new password. A successful password change in User must clear expiry;
-  revalidate the account before completing login. Authentication alone must not
-  clear expiry or grant a normal session while the password change is outstanding.
-
-This is a TODO only. Current expiry rejection, including its effect on OTP delivery,
-remains in place until the continuation is implemented. The code TODOs are in
-`AccountEligibility.canLogin()` and `SessionService.create()`. Refresh continues to
-reject expired credentials.
+After a correct password in password-only login, a correct password and OTP in
+2FA, or a correct OTP in passwordless login, Auth checks credential expiry.
+If expired, it returns HTTP 200 with
+`data.step = "PASSWORD_CHANGE_REQUIRED"` and
+`data.passwordChange = {"passwordChangeToken":"...","expiresIn":300}`.
+No access or refresh token is issued at this step. Submit the new password and
+the one-time token to `POST /password/expired/complete`. Auth rechecks the
+account after User updates the password and issues a token pair only when the
+account and saved login proof still meet current login policy. If the password
+was updated and sign-in must restart, the response step is
+`PASSWORD_UPDATED_LOGIN_REQUIRED`. Refresh continues to reject expired
+credentials. See [password lifecycle](password-lifecycle-design.md).
 
 ## Throttling and cooldown
 
@@ -132,9 +132,9 @@ Each refresh-token row captures the bounded/sanitized `ip_address`, `user_agent`
 
 Opaque tokens contain 32 random bytes. PostgreSQL stores only SHA-256 refresh-token hashes. Redis stores OTP challenges under `auth:otp:{login}:challenge:<mfaToken>`, containing the user ID, credential version, readable `identifierKey` (for example `identifier:user@example.com`), actual `destination`, plain six-digit `code`, channel, expiry, attempts and state. The original MFA token appears directly in the key and the latest-challenge pointer; the OTP code is stored as text, including leading zeros. `{login}` is a Redis Cluster routing tag that keeps the atomic OTP scripts in one slot; it does not obscure any data. Every challenge and account latest-challenge pointer has the OTP TTL (5 minutes by default); state transitions never extend it. Tokens, codes, passwords and credential hashes are never logged. Application logs use SLF4J fluent `atInfo()/atWarn()/atError()` calls with separate `addKeyValue` fields and a human-readable message. Important auth requests record `ip_address`, `http_method`, `path`, bounded/sanitized `user_agent` and `device_id`. Domain outcomes additionally record user/session IDs when known, authentication method, OTP channel/attempt count, safe failure reason or retry duration. Unknown/expired OTP and refresh credentials, malformed input and dependency failures also record request context. Passwords, OTP values, request bodies, authorization headers and raw access/refresh/MFA tokens are never logged; identifiers use HMAC fingerprints. The servlet remote address is used, ignoring raw forwarded headers. Successful login, session creation and rotation events are emitted after the database commit. Native key/value fields are retained by the existing Logstash JSON encoder. With user approval, only `%kvp` was added to the existing Spring Boot console layout so these fields also appear in the terminal; appenders, levels and destinations are unchanged.
 
-Refresh tokens expire after 7 days of inactivity and rotate on every refresh. A session has an absolute lifetime of 30 days, which rotation never extends. Session validity requires `is_revoked = false`, `revoked_at IS NULL`, and an absolute expiry strictly after the current time. Refresh validity requires `refresh_tokens.is_active = true`, null revocation and consumption timestamps, a future token expiry and an active session. `is_active = false` or a non-null revocation timestamp independently causes rejection. Normal rotation sets the original token's `is_active` to false and records `consumed_at` in the same transaction that inserts an active replacement. A failed transaction rolls back both changes. `consumed_at` remains distinct from `revoked_at`, so reusing a rotated token still revokes its entire family. Revocation on logout, logout-all, refresh reuse/expiry, missing users, account changes, and scheduled cleanup marks both the session and all its refresh tokens in the same transaction, preserving existing revocation timestamps/reasons and consumption history. Expired sessions encountered during refresh are also revoked immediately. Token consumption during normal rotation remains separate from revocation so reuse can still be detected. Each session is a separate token family; concurrent sessions are allowed. Every token replacement belongs to the same family. Refresh and logout first lock the session with JPA `PESSIMISTIC_WRITE`, then read the token; the preliminary lookup reads only a session ID, avoiding stale entities before the lock. Reuse revocation commits even though the response is 401. OTP verification atomically claims its Redis challenge before issuing a session. Only one verifier can claim it. After the database transaction commits, the claim is closed; after a confirmed rollback, only its owner can release it for retry. Unknown outcomes or a crashed verifier leave it claimed until the original TTL expires; a new code can be requested after cooldown. No expiring verification lease can accidentally allow a second issuer while the first transaction is still running. Redis and PostgreSQL do not share a transaction, so this uses an atomic claim with completion callbacks. Atomic Redis failure counters delete challenges on the third incorrect code (configurable through AUTH_OTP_MAX_ATTEMPTS), and an atomic replacement script removes the previous challenge when a new one is issued. OTP state does not require a SQL table or cleanup job.
+Refresh tokens expire after 7 days of inactivity and rotate on every refresh. A session has an absolute lifetime of 30 days, which rotation never extends. Session validity requires `is_revoked = false`, `revoked_at IS NULL`, and an absolute expiry strictly after the current time. Refresh validity requires `refresh_tokens.is_active = true`, null revocation and consumption timestamps, a future token expiry and an active session. `is_active = false` or a non-null revocation timestamp independently causes rejection. Normal rotation sets the original token's `is_active` to false and records `consumed_at` in the same transaction that inserts an active replacement. A failed transaction rolls back both changes. `consumed_at` remains distinct from `revoked_at`, so reusing a rotated token still revokes its entire family. Revocation on logout, logout-all, refresh reuse/expiry, missing users, account changes, and scheduled cleanup marks both the session and all its refresh tokens in the same transaction, preserving existing revocation timestamps/reasons and consumption history. Expired sessions encountered during refresh are also revoked immediately. Token consumption during normal rotation remains separate from revocation so reuse can still be detected. Each session is a separate token family; concurrent sessions are allowed. Every token replacement belongs to the same family. Refresh looks up the session ID from the refresh token hash, locks the session with JPA `PESSIMISTIC_WRITE`, then reads the refresh token. Logout takes the same lock using the verified access token’s session ID, so any refresh token rotated concurrently is covered by session revocation. Reuse revocation commits even though the response is 401. OTP verification atomically claims its Redis challenge before issuing a session. Only one verifier can claim it. After the database transaction commits, the claim is closed; after a confirmed rollback, only its owner can release it for retry. Unknown outcomes or a crashed verifier leave it claimed until the original TTL expires; a new code can be requested after cooldown. No expiring verification lease can accidentally allow a second issuer while the first transaction is still running. Redis and PostgreSQL do not share a transaction, so this uses an atomic claim with completion callbacks. Atomic Redis failure counters delete challenges on the third incorrect code (configurable through AUTH_OTP_MAX_ATTEMPTS), and an atomic replacement script removes the previous challenge when a new one is issued. OTP state does not require a SQL table or cleanup job.
 
-Access tokens use RS256 with the existing RSA/JWKS setup, `typ=at+jwt`, `iss`, `aud`, `sub`, `iat`, `nbf`, `exp`, `jti`, `token_use=access`, `sid`, `credential_version` and `roles`. The decoder pins RS256 and validates issuer, audience, type, timestamps and required claims. The filter derives `ROLE_…` authorities from signed roles and checks the active session in PostgreSQL on protected Auth requests. Logout/reuse therefore invalidates access on this service immediately. Other services that validate only JWT/JWKS continue accepting an already-issued access token until its expiry (15 minutes by default); they need their own session/revocation check for immediate invalidation. Upstream account/credential changes are rechecked at login/OTP verification/refresh, not on every protected request.
+Access tokens use RS256 with the existing RSA/JWKS setup, `typ=at+jwt`, `iss`, `aud`, `sub`, `iat`, `nbf`, `exp`, `jti`, `token_use=access`, `sid`, `credential_version` and `roles`. The decoder pins RS256 and validates issuer, audience, type, timestamps and required claims. The filter derives `ROLE_…` authorities from signed roles. Access token authentication is stateless and validates the JWT locally. Logout, refresh reuse and account changes can revoke the session and refresh tokens. Already-issued access tokens remain valid until their signed expiration, with a configurable lifetime of up to 15 minutes and no clock-skew allowance in Auth. The refresh and logout operations still use PostgreSQL to manage sessions and refresh tokens.
 
 A refresh-token state task runs every minute by default (`AUTH_REFRESH_TOKEN_STATE_INTERVAL`), marking active tokens inactive when consumed, revoked, expired, or attached to an expired/revoked session. It never reactivates tokens, deletes history or fabricates consumption/revocation timestamps. Runtime refresh checks reject expiry immediately and persist deactivation before returning an authentication error; idle expired rows are reconciled on the next task run, so the stored flag can lag wall-clock expiry by a scheduling interval. Changes to an account in User are detected and persisted when refresh revalidates that account. Session archival cleanup remains hourly (first run after one interval, then a fixed delay after each completion). Sessions whose absolute expiry is more than `AUTH_RETENTION` (default 7 days) in the past are revoked, along with every refresh token in their family, without deleting any records. Existing revocation timestamps/reasons and token consumption history are preserved; repeated archival runs preserve existing revocation timestamps. Each archival run also reconciles unusable token activity independently of the retention cutoff. `AUTH_RETENTION` is the delay before archival revocation, not a data deletion period. Session and token history remain stored indefinitely. OTP challenges, latest-challenge pointers, locks and cooldowns expire in Redis through TTL without a scheduler.
 

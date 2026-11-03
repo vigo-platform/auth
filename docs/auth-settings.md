@@ -33,11 +33,11 @@ service's transport configuration. The notification adapter remains the delivery
 
 | Setting | Enforced behavior |
 | --- | --- |
-| `loginEnabled` | Gates password login, email/SMS OTP initiation and OTP verification. Existing sessions can still refresh and log out. |
-| `registerEnabled` | Gates `POST /api/v1/auth/register` before hashing or creating a User account. Independent of `loginEnabled`; registration never automatically logs in. |
+| `loginEnabled` | Gates password login, email/SMS OTP initiation, OTP verification and session creation in `/register/complete`. Existing sessions can still refresh and log out. |
+| `registerEnabled` | Gates registration initiation, verification and completion independently of `loginEnabled`. |
 | `defaultOtpChannel` | Selects the required follow-up OTP after a correct password when account/global second-factor policy requires it. Explicit email/SMS endpoints retain their requested channel. |
-| `emailNotificationEnabled` | Allows EMAIL challenge creation and verification. |
-| `smsNotificationEnabled` | Allows SMS challenge creation and verification. |
+| `emailNotificationEnabled` | Allows EMAIL login challenges and all email-registration stages, including completion. |
+| `smsNotificationEnabled` | Allows SMS login challenges and all phone-registration stages, including completion. |
 | `inAppNotificationEnabled` | Allows IN_APP password follow-up challenge creation and verification. |
 
 Disabled login/registration return HTTP 503 with `LOGIN_DISABLED` or
@@ -55,6 +55,12 @@ alone does not invalidate an outstanding challenge on an enabled channel. Re-ena
 a channel permits an otherwise valid, unexpired challenge. The existing defaults keep
 all three channels disabled: explicitly enable a channel in the active database
 revision before using it. Environment defaults only seed a missing settings record.
+
+Registration selects EMAIL for an email identifier and SMS for a phone identifier;
+`defaultOtpChannel` does not override that choice. IN_APP has no guest destination
+and is never used for registration. Disabling registration or its selected channel
+also pauses unexpired registration proofs before account creation. See
+[registration](registration.md) for the staged API and notification integration.
 
 ## Revisions and synchronization
 
@@ -134,8 +140,10 @@ and failures.
 `AuthPolicyServiceTest` checks every combination of the three channel switches,
 default selection and independent login/registration switches. `LoginFlowIntegrationTest`
 checks HTTP gates, setting changes between authentication stages, channel disablement
-after issuance, existing-session behavior, registration, and error handling using
+after issuance, existing-session behavior, and error handling using
 disposable PostgreSQL and Redis with User and notification test doubles.
+`RegistrationFlowIntegrationTest` separately covers the complete staged registration
+workflow, including settings changes between stages and creation concurrency.
 
 `AuthSettingRepositoryLockTest` additionally verifies the real repository query on
 PostgreSQL, including mutual exclusion and release after both commit and rollback.

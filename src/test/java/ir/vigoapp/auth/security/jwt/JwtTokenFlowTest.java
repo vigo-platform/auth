@@ -32,7 +32,7 @@ class JwtTokenFlowTest {
 
         Instant now = Instant.now();
         JwtClaimsSet claims = JwtClaimsSet.builder()
-                .issuer("https://auth.vigoapp.ir")
+                .issuer("auth.vigoapp.ir")
                 .issuedAt(now)
                 .expiresAt(now.plus(1, ChronoUnit.HOURS))
                 .subject("user-12345")
@@ -50,6 +50,6 @@ class JwtTokenFlowTest {
         Jwt decodedJwt = decoder.decode(jwt.getTokenValue());
         assertThat(decodedJwt.getSubject()).isEqualTo("user-12345");
         assertThat(decodedJwt.getClaimAsString("email")).isEqualTo("test@vigoapp.ir");
-        assertThat(decodedJwt.getIssuer().toString()).isEqualTo("https://auth.vigoapp.ir");
+        assertThat(decodedJwt.getClaimAsString("iss")).isEqualTo("auth.vigoapp.ir");
     }
 }

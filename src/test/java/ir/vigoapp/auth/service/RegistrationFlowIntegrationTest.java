@@ -10,6 +10,7 @@ import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.CreateUserCommand;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.config.AuthProperties;
+import ir.vigoapp.auth.config.JwtProperties;
 import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.registration.*;
 import ir.vigoapp.auth.dto.setting.AuthSettingDto;
@@ -37,8 +38,10 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -47,6 +50,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
@@ -89,10 +93,12 @@ class RegistrationFlowIntegrationTest {
     @Autowired AuthProtectionService protection;
     @Autowired PasswordEncoder passwords;
     @Autowired AuthProperties properties;
+    @Autowired JwtProperties jwtProperties;
     @Autowired SecureTokens tokens;
     @Autowired Clock clock;
     @Autowired AuthSessionRepository sessions;
     @Autowired RefreshTokenRepository refreshTokens;
+    @Autowired JwtDecoder decoder;
     private final AtomicReference<Instant> now = new AtomicReference<>();
     private AuthSettingDto current;
     private ListAppender<ILoggingEvent> auditLogs;
@@ -130,8 +136,8 @@ class RegistrationFlowIntegrationTest {
     @ParameterizedTest
     @CsvSource({"' NEW@EXAMPLE.COM ',new@example.com,EMAIL,true", "new@example.com,new@example.com,EMAIL,false",
             "00989111111111,+989111111111,SMS,true", "09111111111,+989111111111,SMS,false"})
-    void completesVerifiedRegistrationWithoutAnAutomaticLogin(String input, String normalized, OtpChannel channel,
-                                                             boolean loginEnabled) throws Exception {
+    void completesVerifiedRegistrationAndIssuesTokensWhenLoginIsEnabled(String input, String normalized,
+                                                                        OtpChannel channel, boolean loginEnabled) throws Exception {
         captureAuditLogs();
         current = current.toBuilder().loginEnabled(loginEnabled).defaultOtpChannel(OtpChannel.IN_APP).build();
         var challenge = start(input);
@@ -142,6 +148,8 @@ class RegistrationFlowIntegrationTest {
         String proof = tree(verified).at("/data/registrationToken").asText();
         assertThat(tree(verified).at("/data/expiresIn").asLong()).isEqualTo(900);
         verify(users, never()).createUser(any());
+        assertThat(sessions.count()).isZero();
+        assertThat(refreshTokens.count()).isZero();
         var response = call("/register/complete", Map.of("registrationToken", proof, "password", " new-password ",
                 "firstName", "Test", "lastName", "User"));
         assertThat(response.getResponse().getStatus()).isEqualTo(201);
@@ -152,7 +160,6 @@ class RegistrationFlowIntegrationTest {
         assertThat(tree(response).at("/data/userId").asLong()).isEqualTo(42);
         assertThat(tree(response).at("/data/status").asText()).isEqualTo("ACTIVE");
         assertThat(tree(response).path("timestamp").asText()).endsWith("Z");
-        assertThat(tree(response).at("/data/tokens").isMissingNode()).isTrue();
         var command = ArgumentCaptor.forClass(CreateUserCommand.class);
         verify(users).createUser(command.capture());
         assertThat(command.getValue()).satisfies(value -> {
@@ -162,8 +169,36 @@ class RegistrationFlowIntegrationTest {
             assertThat(value.lastName()).isEqualTo("User");
             assertThat(passwords.matches(" new-password ", value.passwordHash())).isTrue();
         });
-        assertThat(sessions.count()).isZero();
-        assertThat(refreshTokens.count()).isZero();
+        var pair = tree(response).at("/data/tokens");
+        if (loginEnabled) {
+            assertThat(pair.path("tokenType").asText()).isEqualTo("Bearer");
+            assertThat(pair.path("accessExpiresIn").asLong()).isPositive();
+            assertThat(pair.path("refreshExpiresIn").asLong()).isPositive();
+            String accessToken = pair.path("accessToken").asText();
+            String refreshToken = pair.path("refreshToken").asText();
+            var jwt = decoder.decode(accessToken);
+            assertThat(jwt.getSubject()).isEqualTo("42");
+            assertThat(jwt.getClaimAsStringList("roles")).containsExactly("USER");
+            var sessionId = UUID.fromString(jwt.getClaimAsString("sid"));
+            assertThat(sessions.findAll()).singleElement().satisfies(session -> {
+                assertThat(session.getId()).isEqualTo(sessionId);
+                assertThat(session.getUserId()).isEqualTo(42);
+                assertThat(session.isActive(now.get())).isTrue();
+            });
+            assertThat(refreshTokens.findAll()).singleElement().satisfies(token -> {
+                assertThat(token.getTokenHash()).isEqualTo(tokens.hash(refreshToken));
+                assertThat(token.getIpAddress()).isEqualTo(CLIENT.ipAddress());
+                assertThat(token.getUserAgent()).isEqualTo(CLIENT.userAgent());
+                assertThat(token.getDeviceId()).isEqualTo(CLIENT.deviceId());
+                assertThat(token.isActive()).isTrue();
+            });
+            assertThat(refreshTokens.findSessionIdByTokenHash(tokens.hash(refreshToken))).contains(sessionId);
+            assertNoCredentialLogs(accessToken, refreshToken);
+        } else {
+            assertThat(pair.isMissingNode()).isTrue();
+            assertThat(sessions.count()).isZero();
+            assertThat(refreshTokens.count()).isZero();
+        }
         assertThat(registrations.findChallenge(challenge.token())).isEmpty();
         assertThat(registrations.findGrant(proof)).isEmpty();
         assertThat(auditLogs.list).anySatisfy(event -> {
@@ -175,6 +210,33 @@ class RegistrationFlowIntegrationTest {
         });
         assertNoCredentialLogs(challenge.token(), challenge.code(), proof, " new-password ",
                 command.getValue().passwordHash(), normalized);
+    }
+
+    @Test
+    void tokensFromTheRegistrationAliasCanRefreshAndLogOut() throws Exception {
+        String proof = verifyChallenge(start("new@example.com"));
+        var response = call("/register", Map.of("registrationToken", proof, "password", "new-password"));
+        assertThat(response.getResponse().getStatus()).isEqualTo(201);
+        var pair = tree(response).at("/data/tokens");
+        String accessToken = pair.path("accessToken").asText();
+        String refreshToken = pair.path("refreshToken").asText();
+        var account = created(CreateUserCommand.builder().email("new@example.com").build());
+        when(users.getUserById(account.userId())).thenReturn(account);
+
+        var refreshed = call("/refresh", Map.of("refreshToken", refreshToken));
+        assertThat(refreshed.getResponse().getStatus()).isEqualTo(200);
+        String nextRefresh = tree(refreshed).at("/data/refreshToken").asText();
+        assertThat(nextRefresh).isNotBlank().isNotEqualTo(refreshToken);
+        var original = refreshTokens.findByTokenHash(tokens.hash(refreshToken)).orElseThrow();
+        assertThat(original.isActive()).isFalse();
+        assertThat(original.getConsumedAt()).isNotNull();
+
+        var logout = mvc.perform(post("/api/v1/auth/logout").header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andReturn();
+        assertThat(logout.getResponse().getStatus()).isEqualTo(200);
+        assertThat(sessions.findAll()).singleElement().satisfies(session ->
+                assertThat(session.getRevokedReason()).isEqualTo("LOGOUT"));
+        assertError(call("/refresh", Map.of("refreshToken", nextRefresh)), 401, "INVALID_REFRESH_TOKEN");
     }
 
     @ParameterizedTest
@@ -406,6 +468,8 @@ class RegistrationFlowIntegrationTest {
         assertError(retry, 401, "INVALID_REGISTRATION_TOKEN");
         assertThat(registrations.findGrant(proof)).isEmpty();
         verify(users, times(1)).createUser(any());
+        assertThat(sessions.count()).isEqualTo(1);
+        assertThat(refreshTokens.count()).isEqualTo(1);
     }
 
     @Test
@@ -420,6 +484,26 @@ class RegistrationFlowIntegrationTest {
             assertError(call("/register/complete", body), 401, "INVALID_REGISTRATION_TOKEN");
         }
         assertError(call("/register/verify", Map.of("mfaToken", challenge.token(), "otp", challenge.code())), 401, "INVALID_OTP");
+        verify(users, times(1)).createUser(any());
+        assertThat(sessions.count()).isEqualTo(1);
+        assertThat(refreshTokens.count()).isEqualTo(1);
+    }
+
+    @Test
+    void aTokenSigningFailureRollsBackSessionCreationAndDoesNotReopenTheProof() throws Exception {
+        String proof = verifyChallenge(start("new@example.com"));
+        String signingKey = jwtProperties.getKeyId();
+        try {
+            jwtProperties.setKeyId("unavailable-signing-key");
+            assertError(complete(proof), 500, "INTERNAL_ERROR");
+        } finally {
+            jwtProperties.setKeyId(signingKey);
+        }
+
+        assertThat(sessions.count()).isZero();
+        assertThat(refreshTokens.count()).isZero();
+        assertThat(registrations.findGrant(proof)).isEmpty();
+        assertError(complete(proof), 401, "INVALID_REGISTRATION_TOKEN");
         verify(users, times(1)).createUser(any());
     }
 

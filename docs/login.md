@@ -8,7 +8,7 @@ All endpoints use `/api/v1/auth` and the project's `ApiResponse`: `success`, opt
 | --- | --- | --- |
 | `POST /register/initiate` | `{"identifier":"new@example.com"}` or a mobile number | Registration OTP challenge; see [registration](registration.md) |
 | `POST /register/verify` | `{"mfaToken":"...","otp":"012345"}` | A temporary `registrationToken`; no account or login tokens |
-| `POST /register/complete` (alias `/register`) | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId` and User-owned `status`; names optional; no tokens |
+| `POST /register/complete` (alias `/register`) | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId`, User-owned `status` and `tokens` when sign-in is available |
 | `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, OTP challenge, or password change continuation |
 | `POST /login-otp-email` | `{"email":"user@example.com"}` | Generic OTP challenge response |
 | `POST /login-otp-phone` | `{"phone":"09123456789"}` | Generic SMS challenge response |
@@ -63,8 +63,9 @@ remain valid, so an old device cannot log out a session created after a password
 change. An ineligible account still causes all of that user's sessions and refresh
 tokens to be revoked, regardless of credential version.
 
-`AuthPolicyService` enforces `loginEnabled` for password login, OTP initiation and
-verification. Each channel's `*NotificationEnabled` switch gates both creation and
+`AuthPolicyService` enforces `loginEnabled` for password login, OTP initiation,
+verification and session creation after registration. Each channel's
+`*NotificationEnabled` switch gates both creation and
 verification of its authentication challenges. A disabled channel returns 503
 `OTP_CHANNEL_DISABLED` and never falls back to password-only login. Existing sessions
 may still refresh or log out while new logins/channels are disabled. See
@@ -73,10 +74,11 @@ may still refresh or log out while new logins/channels are disabled. See
 `registerEnabled` independently gates every registration stage with 503
 `REGISTRATION_DISABLED`. Registration now requires an email/SMS OTP before account
 creation. Channel switches, identifier cooldown/failure policies and the IP limit
-also apply. Only the contact proven by registration can reach `CreateUser`; User's
-current deployment creates the account active and verified. Auth still does not
-issue login tokens or add a verification/activation RPC. See [registration](registration.md)
-for the new request bodies, Redis state, delivery integration and retry behavior.
+also apply. Only the contact proven by registration can reach `CreateUser`. User's
+current deployment creates the account active and verified. Auth then uses the
+same session and token flow as login for eligible accounts when login is enabled.
+See [registration](registration.md) for request bodies, Redis state, delivery
+integration and retry behavior.
 
 User contract 3.1.0 supplies the per-account `two_factor_enabled` flag. After a correct password, Auth requires OTP when this flag is `true` **or** `AUTH_PASSWORD_OTP_REQUIRED=true`. The global flag defaults to `false` and cannot disable an account's two-factor policy. Both policies use the current settings' `defaultOtpChannel`. No session or access/refresh token is created before successful OTP verification. If the selected channel has no verified destination, login fails with the generic `INVALID_CREDENTIALS` response; it never falls back to password alone. `IN_APP` is only selectable for the password follow-up challenge, and its destination is the user ID.
 

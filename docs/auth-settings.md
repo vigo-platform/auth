@@ -33,8 +33,8 @@ service's transport configuration. The notification adapter remains the delivery
 
 | Setting | Enforced behavior |
 | --- | --- |
-| `loginEnabled` | Gates password login, email/SMS OTP initiation and OTP verification. Existing sessions can still refresh and log out. |
-| `registerEnabled` | Gates registration initiation, verification, completion and the `/register` completion alias. Independent of `loginEnabled`; registration never automatically logs in. |
+| `loginEnabled` | Gates password login, email/SMS OTP initiation, OTP verification and session creation after registration. Existing sessions can still refresh and log out. |
+| `registerEnabled` | Gates registration initiation, verification, completion and the `/register` completion alias independently of `loginEnabled`. |
 | `defaultOtpChannel` | Selects the required follow-up OTP after a correct password when account/global second-factor policy requires it. Explicit email/SMS endpoints retain their requested channel. |
 | `emailNotificationEnabled` | Allows EMAIL login challenges and all email-registration stages, including completion. |
 | `smsNotificationEnabled` | Allows SMS login challenges and all phone-registration stages, including completion. |

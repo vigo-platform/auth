@@ -13,6 +13,10 @@ import org.springframework.stereotype.Service;
 public class AuthPolicyService {
     private final AuthSettingService settings;
 
+    public boolean isLoginEnabled() {
+        return settings.getCurrent().loginEnabled();
+    }
+
     public AuthSettingDto requireLoginEnabled() {
         var current = settings.getCurrent();
         if (!current.loginEnabled()) {

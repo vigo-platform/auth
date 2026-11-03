@@ -10,6 +10,7 @@ import ir.vigoapp.auth.config.AuthProperties;
 import ir.vigoapp.auth.dto.ClientInfo;
 import ir.vigoapp.auth.dto.registration.RegisterRequest;
 import ir.vigoapp.auth.dto.setting.AuthSettingDto;
+import ir.vigoapp.auth.dto.token.TokenResponse;
 import ir.vigoapp.auth.exception.AuthException;
 import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.model.registration.RegistrationGrant;
@@ -18,9 +19,10 @@ import ir.vigoapp.auth.security.SecureTokens;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.Clock;
@@ -33,6 +35,7 @@ import static org.mockito.Mockito.*;
 
 class RegistrationServiceTest {
     private final UserGrpcClient users = classMock(UserGrpcClient.class);
+    private final SessionService sessions = classMock(SessionService.class);
     private final AuthProtectionService protection = classMock(AuthProtectionService.class);
     private final RegistrationRepository repository = classMock(RegistrationRepository.class);
     private final PasswordEncoder passwords = mock(PasswordEncoder.class);
@@ -44,7 +47,7 @@ class RegistrationServiceTest {
 
     @BeforeEach
     void prepare() {
-        current = AuthSettingDto.builder().registerEnabled(true).emailNotificationEnabled(true).build();
+        current = AuthSettingDto.builder().registerEnabled(true).loginEnabled(true).emailNotificationEnabled(true).build();
         var policy = new AuthPolicyService(new AuthSettingService(null, null) {
             @Override public AuthSettingDto getCurrent() { return current; }
         });
@@ -55,7 +58,7 @@ class RegistrationServiceTest {
         grant = grant(token, "OPEN");
         when(repository.findGrant(token)).thenReturn(Optional.of(grant));
         when(passwords.encode("new-password")).thenReturn("encoded-password");
-        registration = new RegistrationService(policy, protection, users, passwords, repository,
+        registration = new RegistrationService(policy, protection, users, sessions, passwords, repository,
                 null, tokens, properties, Clock.systemUTC());
         request = RegisterRequest.builder().registrationToken(token).password("new-password").build();
     }
@@ -72,7 +75,7 @@ class RegistrationServiceTest {
                 .isInstanceOfSatisfying(AuthException.class, error -> assertThat(error.getCode())
                         .isEqualTo(registrationSwitch ? "REGISTRATION_DISABLED" : "OTP_CHANNEL_DISABLED"));
         verify(passwords).encode("new-password");
-        verifyNoInteractions(users);
+        verifyNoInteractions(users, sessions);
         verify(repository, never()).claim(anyString(), anyString(), any());
     }
 
@@ -80,9 +83,10 @@ class RegistrationServiceTest {
     @ValueSource(booleans = {true, false})
     void cleanupFailureCannotHideAConfirmedAccountCreation(boolean grantCleanupFailure) {
         when(repository.claim(anyString(), anyString(), any())).thenReturn(true);
-        var created = UserAccount.builder().userId(42).roles(List.of("USER")).email(grant.identifier())
-                .status(UserAccount.AccountStatus.ACTIVE).emailVerified(true).credentialVersion(1).build();
+        var created = activeAccount();
         when(users.createUser(any())).thenReturn(created);
+        var tokens = new TokenResponse("Bearer", "access-token", 300, "refresh-token", 900);
+        when(sessions.create(created, client)).thenReturn(tokens);
         if (grantCleanupFailure) doThrow(new IllegalStateException("test grant cleanup failure"))
                 .when(repository).complete(anyString(), anyString());
         else doThrow(new IllegalStateException("test counter failure")).when(protection).clearFailures(any(), anyLong());
@@ -90,7 +94,28 @@ class RegistrationServiceTest {
         var result = registration.register(request, client);
         assertThat(result.userId()).isEqualTo(42);
         assertThat(result.status()).isEqualTo(UserAccount.AccountStatus.ACTIVE);
+        assertThat(result.tokens()).isSameAs(tokens);
         verify(users, times(1)).createUser(any());
+    }
+
+    @Test
+    void sessionCreationFailureDoesNotLetACompletedRegistrationCreateTheAccountAgain() {
+        var created = activeAccount();
+        when(repository.claim(anyString(), anyString(), any())).thenReturn(true);
+        when(users.createUser(any())).thenReturn(created);
+        when(repository.complete(eq(request.registrationToken()), anyString())).thenAnswer(invocation -> {
+            when(repository.findGrant(request.registrationToken())).thenReturn(Optional.empty());
+            return true;
+        });
+        var failure = new DataAccessResourceFailureException("test session storage failure");
+        when(sessions.create(created, client)).thenThrow(failure);
+
+        assertThatThrownBy(() -> registration.register(request, client)).isSameAs(failure);
+        assertThatThrownBy(() -> registration.register(request, client)).isInstanceOfSatisfying(AuthException.class,
+                error -> assertThat(error.getCode()).isEqualTo("INVALID_REGISTRATION_TOKEN"));
+        verify(users).createUser(any());
+        verify(sessions).create(created, client);
+        verify(repository, never()).release(anyString(), anyString());
     }
 
     @ParameterizedTest
@@ -150,6 +175,11 @@ class RegistrationServiceTest {
     private RegistrationGrant grant(String token, String state) {
         return RegistrationGrant.builder().token(token).identifier("new@example.com").channel(OtpChannel.EMAIL)
                 .state(state).expiresAt(Instant.now().plusSeconds(900)).build();
+    }
+
+    private UserAccount activeAccount() {
+        return UserAccount.builder().userId(42).roles(List.of("USER")).email(grant.identifier())
+                .status(UserAccount.AccountStatus.ACTIVE).emailVerified(true).credentialVersion(1).build();
     }
 
     private static <T> T classMock(Class<T> type) {

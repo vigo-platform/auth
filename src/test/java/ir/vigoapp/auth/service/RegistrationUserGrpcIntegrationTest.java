@@ -12,6 +12,7 @@ import ir.vigoapp.auth.dto.registration.RegisterRequest;
 import ir.vigoapp.auth.dto.registration.RegistrationInitiateRequest;
 import ir.vigoapp.auth.dto.registration.RegistrationVerifyRequest;
 import ir.vigoapp.auth.dto.setting.AuthSettingDto;
+import ir.vigoapp.auth.dto.token.TokenResponse;
 import ir.vigoapp.auth.exception.AuthException;
 import ir.vigoapp.auth.model.OtpChannel;
 import ir.vigoapp.auth.repository.registration.RegistrationRepository;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.MockMakers;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -34,6 +36,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.*;
 
 /** Requires a disposable stateful User mock and Redis; tests the actual RPC rather than a mocked client. */
 @EnabledIfEnvironmentVariable(named = "AUTH_TEST_USER_GRPC_PORT", matches = "[0-9]+")
@@ -45,6 +48,7 @@ class RegistrationUserGrpcIntegrationTest {
     private ManagedChannel channel;
     private StringRedisTemplate redis;
     private UserGrpcClient users;
+    private SessionService sessions;
     private RegistrationService registration;
     private PasswordEncoder passwords;
 
@@ -65,7 +69,7 @@ class RegistrationUserGrpcIntegrationTest {
         var tokens = new SecureTokens(properties);
         var settings = new AuthSettingService(null, null) {
             @Override public AuthSettingDto getCurrent() {
-                return AuthSettingDto.builder().registerEnabled(true)
+                return AuthSettingDto.builder().registerEnabled(true).loginEnabled(true)
                         .emailNotificationEnabled(true).smsNotificationEnabled(true).build();
             }
         };
@@ -75,8 +79,9 @@ class RegistrationUserGrpcIntegrationTest {
             }
         };
         passwords = new AuthenticationConfig().passwordEncoder();
+        sessions = mock(SessionService.class, withSettings().mockMaker(MockMakers.SUBCLASS));
         registration = new RegistrationService(new AuthPolicyService(settings),
-                new AuthProtectionService(redis, properties, tokens), users, passwords,
+                new AuthProtectionService(redis, properties, tokens), users, sessions, passwords,
                 new RegistrationRepository(redis, properties), notifications, tokens, properties, Clock.systemUTC());
     }
 
@@ -108,10 +113,14 @@ class RegistrationUserGrpcIntegrationTest {
         // Same completion fields and password as the reported failure, using a fresh test-only proof.
         var body = RegisterRequest.builder().registrationToken(verified.registrationToken())
                 .password("example-password").firstName("Test").lastName("User").build();
+        var tokens = new TokenResponse("Bearer", "access-token", 300, "refresh-token", 900);
+        when(sessions.create(any(), eq(client))).thenReturn(tokens);
         var result = registration.register(body, client);
         assertThat(result.userId()).isGreaterThan(3);
         assertThat(result.status()).isEqualTo(UserAccount.AccountStatus.ACTIVE);
+        assertThat(result.tokens()).isSameAs(tokens);
         var account = users.getUserById(result.userId());
+        verify(sessions).create(account, client);
         assertThat(account.emailVerified()).isEqualTo(email);
         assertThat(account.phoneVerified()).isEqualTo(!email);
         assertThat(account.credentialVersion()).isEqualTo(1);

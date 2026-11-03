@@ -19,6 +19,7 @@ import ir.vigoapp.auth.model.registration.RegistrationGrant;
 import ir.vigoapp.auth.repository.registration.RegistrationRepository;
 import ir.vigoapp.auth.security.PasswordPolicy;
 import ir.vigoapp.auth.security.SecureTokens;
+import ir.vigoapp.auth.security.login.AccountEligibility;
 import ir.vigoapp.auth.security.login.LoginIdentifier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +36,7 @@ public class RegistrationService {
     private final AuthPolicyService policy;
     private final AuthProtectionService protection;
     private final UserGrpcClient users;
+    private final SessionService sessions;
     private final PasswordEncoder passwords;
     private final RegistrationRepository registrations;
     private final NotificationService notifications;
@@ -171,13 +173,16 @@ public class RegistrationService {
             if (exception.getCode() == UserClientException.Code.ALREADY_EXISTS) throw alreadyExists();
             throw exception;
         }
+        // The User mutation is committed even if the Auth session cannot be created.
         consumeGrant(grant, owner, user, client);
         log.atInfo().addKeyValue("event", "registration_success").addKeyValue("result", "SUCCESS")
                 .addKeyValue("user_id", user.userId()).addKeyValue("account_status", user.status())
                 .addKeyValue("channel", grant.channel()).addKeyValue("ip_address", client.ipAddress())
                 .addKeyValue("user_agent", client.userAgent()).addKeyValue("device_id", client.deviceId())
                 .log("User account created from a verified registration contact.");
-        return RegisterResponse.builder().userId(user.userId()).status(user.status()).build();
+        var issuedTokens = AccountEligibility.canLogin(user) && policy.isLoginEnabled()
+                ? sessions.create(user, client) : null;
+        return RegisterResponse.builder().userId(user.userId()).status(user.status()).tokens(issuedTokens).build();
     }
 
     private void consumeGrant(RegistrationGrant grant, String owner, UserAccount user, ClientInfo client) {

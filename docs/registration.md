@@ -17,12 +17,19 @@ no-store`. Credentials go in JSON bodies, never URLs. The API sets no cookies.
 | --- | --- | --- | --- |
 | Request code / resend | `POST /register/initiate` | `{"identifier":"new@example.com"}` or `{"identifier":"09111111111"}` | `{"mfaToken":"<43-character token>","channel":"EMAIL","expiresIn":300,"resendAfter":60}` |
 | Verify | `POST /register/verify` | `{"mfaToken":"<token>","otp":"012345"}` | `{"registrationToken":"<43-character token>","expiresIn":900}` |
-| Complete | `POST /register/complete` | `{"registrationToken":"<proof>","password":"new-password","firstName":"Test","lastName":"User"}` | HTTP 201: `{"userId":42,"status":"ACTIVE"}` |
+| Complete | `POST /register/complete` | `{"registrationToken":"<proof>","password":"new-password","firstName":"Test","lastName":"User"}` | HTTP 201 with `userId`, `status`, and `tokens` when sign-in is available |
 
 `POST /register` is an alias for **completion**, requiring the same verified proof.
 The old email/phone/password body is no longer accepted. Completion cannot change
 or add a contact: Auth derives it exclusively from Redis. A second contact can be
 added later through a separate contact-verification workflow.
+
+For an eligible account with login enabled, completion creates a session and
+returns `data.tokens` with the access token, refresh token, token type, and both
+expiration durations. The session uses the existing `/refresh`, `/logout`, and
+`/logout-all` endpoints. See the [login response format](login.md#endpoints).
+When login is disabled or the new account is ineligible for sign-in, the response
+includes `userId` and `status` and omits `tokens`.
 
 `mfa` and `mfa_token` are accepted aliases for `mfaToken`; `registration_token` is
 an alias for `registrationToken`. Responses use camelCase. OTPs are six-character
@@ -37,8 +44,8 @@ uses EMAIL; a phone uses SMS. The client need not choose a separate channel.
 ## Settings and protection
 
 - `registerEnabled` gates **all three stages**, including the `/register` alias,
-  before external work. It is independent of `loginEnabled`; disabled login does
-  not stop registration and registration never automatically logs in.
+  before external work. `loginEnabled` controls whether completion also creates
+  a session and returns tokens.
 - `emailNotificationEnabled` and `smsNotificationEnabled` gate issuance,
   verification, and completion for the selected contact. Disabling a channel or
   registration pauses unexpired challenges/proofs without consuming attempts.
@@ -84,13 +91,15 @@ used in each other's endpoints. All temporary state expires through Redis TTLs.
 Completion hashes the password, rechecks policy, then atomically claims the proof
 before the remote mutation. Only the owner can release or finish that claim.
 No short claim lease can permit another mutation while a slow RPC is still running.
-A confirmed creation atomically deletes its claimed proof. Only the first
-completion returns HTTP 201; repeating the same request returns 401
+A confirmed creation atomically deletes its claimed proof. At most one
+completion returns HTTP 201. Repeating a successful request returns 401
 `INVALID_REGISTRATION_TOKEN`, including through the `/register` alias. No account
 result is cached for replay. If Redis cleanup fails after User already committed,
 the successful response is preserved and a warning is audited; the remaining
-`CLAIMED` state still cannot create another account. If the success response was
-lost, offer sign-in rather than expecting a second completion to return success.
+`CLAIMED` state still cannot create another account. If session creation fails
+after the account is created, the completion request returns an error and the
+proof stays spent. Offer sign-in if session creation fails or the success response
+is lost.
 
 `CreateUser` has no idempotency key. On timeout, transport failure, or an invalid
 successful response, the claim stays occupied: the remote account may already

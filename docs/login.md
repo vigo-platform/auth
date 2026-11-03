@@ -8,7 +8,7 @@ All endpoints use `/api/v1/auth` and the project's `ApiResponse`: `success`, opt
 | --- | --- | --- |
 | `POST /register/initiate` | `{"identifier":"new@example.com"}` or a mobile number | Registration OTP challenge; see [registration](registration.md) |
 | `POST /register/verify` | `{"mfaToken":"...","otp":"012345"}` | A temporary `registrationToken`; no account or login tokens |
-| `POST /register/complete` (alias `/register`) | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId`, User-owned `status` and `tokens` when sign-in is available |
+| `POST /register/complete` | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId`, User-owned `status` and `tokens` when sign-in is available |
 | `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, OTP challenge, or password change continuation |
 | `POST /login-otp-email` | `{"email":"user@example.com"}` | Generic OTP challenge response |
 | `POST /login-otp-phone` | `{"phone":"09123456789"}` | Generic SMS challenge response |
@@ -75,8 +75,8 @@ may still refresh or log out while new logins/channels are disabled. See
 `REGISTRATION_DISABLED`. Registration now requires an email/SMS OTP before account
 creation. Channel switches, identifier cooldown/failure policies and the IP limit
 also apply. Only the contact proven by registration can reach `CreateUser`. User's
-current deployment creates the account active and verified. Auth then uses the
-same session and token flow as login for eligible accounts when login is enabled.
+current deployment creates the account active and verified. `/register/complete`
+uses the same session and token flow as login for eligible accounts when login is enabled.
 See [registration](registration.md) for request bodies, Redis state, delivery
 integration and retry behavior.
 

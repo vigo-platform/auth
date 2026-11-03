@@ -35,10 +35,10 @@ public class RegistrationController {
                 registration.verify(body, ClientInfo.from(request)));
     }
 
-    @PostMapping({"/register", "/register/complete"})
+    @PostMapping("/register/complete")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<RegisterResponse> complete(@Valid @RequestBody RegisterRequest body, HttpServletRequest request) {
         return ApiResponse.success("Account created successfully.", "حساب کاربری با موفقیت ایجاد شد.",
-                registration.register(body, ClientInfo.from(request)));
+                registration.complete(body, ClientInfo.from(request)));
     }
 }

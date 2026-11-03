@@ -19,12 +19,10 @@ no-store`. Credentials go in JSON bodies, never URLs. The API sets no cookies.
 | Verify | `POST /register/verify` | `{"mfaToken":"<token>","otp":"012345"}` | `{"registrationToken":"<43-character token>","expiresIn":900}` |
 | Complete | `POST /register/complete` | `{"registrationToken":"<proof>","password":"new-password","firstName":"Test","lastName":"User"}` | HTTP 201 with `userId`, `status`, and `tokens` when sign-in is available |
 
-`POST /register` is an alias for **completion**, requiring the same verified proof.
-The old email/phone/password body is no longer accepted. Completion cannot change
-or add a contact: Auth derives it exclusively from Redis. A second contact can be
+Completion derives the verified contact from Redis. A second contact can be
 added later through a separate contact-verification workflow.
 
-For an eligible account with login enabled, completion creates a session and
+For an eligible account with login enabled, `/register/complete` creates a session and
 returns `data.tokens` with the access token, refresh token, token type, and both
 expiration durations. The session uses the existing `/refresh`, `/logout`, and
 `/logout-all` endpoints. See the [login response format](login.md#endpoints).
@@ -43,8 +41,8 @@ uses EMAIL; a phone uses SMS. The client need not choose a separate channel.
 
 ## Settings and protection
 
-- `registerEnabled` gates **all three stages**, including the `/register` alias,
-  before external work. `loginEnabled` controls whether completion also creates
+- `registerEnabled` gates **all three stages** before external work.
+  `loginEnabled` controls whether `/register/complete` also creates
   a session and returns tokens.
 - `emailNotificationEnabled` and `smsNotificationEnabled` gate issuance,
   verification, and completion for the selected contact. Disabling a channel or
@@ -93,9 +91,9 @@ before the remote mutation. Only the owner can release or finish that claim.
 No short claim lease can permit another mutation while a slow RPC is still running.
 A confirmed creation atomically deletes its claimed proof. At most one
 completion returns HTTP 201. Repeating a successful request returns 401
-`INVALID_REGISTRATION_TOKEN`, including through the `/register` alias. No account
-result is cached for replay. If Redis cleanup fails after User already committed,
-the successful response is preserved and a warning is audited; the remaining
+`INVALID_REGISTRATION_TOKEN`. No account result is cached for replay. If Redis
+cleanup fails after User already committed, the successful response is preserved
+and a warning is audited; the remaining
 `CLAIMED` state still cannot create another account. If session creation fails
 after the account is created, the completion request returns an error and the
 proof stays spent. Offer sign-in if session creation fails or the success response
@@ -143,12 +141,10 @@ written to application logs. Credential-bearing records redact `toString()`.
 
 ## Compatibility and verification
 
-No SQL migration, User contract change, or Redis flush is needed. Existing login
-challenges and sessions are unchanged. Clients must switch to the three-step API;
-the `/register` body change deliberately removes direct account creation without
-proof. Upgrade all Auth instances together so an old instance cannot serve that
-old direct endpoint during rollout. The API collection contains all three steps
-with separate registration token variables.
+Clients that used `POST /register` must switch to the three-step API and submit
+the verified proof to `POST /register/complete`. Upgrade all Auth instances
+together to retire the old route. The API collection contains all three steps with
+separate registration token variables.
 
 The single-use completion rule also rejects `COMPLETED` hashes left by the earlier
 result-caching implementation. They expire naturally and do not require a Redis

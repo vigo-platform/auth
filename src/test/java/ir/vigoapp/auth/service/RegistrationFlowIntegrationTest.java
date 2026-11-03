@@ -213,9 +213,9 @@ class RegistrationFlowIntegrationTest {
     }
 
     @Test
-    void tokensFromTheRegistrationAliasCanRefreshAndLogOut() throws Exception {
+    void tokensFromRegistrationCompletionCanRefreshAndLogOut() throws Exception {
         String proof = verifyChallenge(start("new@example.com"));
-        var response = call("/register", Map.of("registrationToken", proof, "password", "new-password"));
+        var response = complete(proof);
         assertThat(response.getResponse().getStatus()).isEqualTo(201);
         var pair = tree(response).at("/data/tokens");
         String accessToken = pair.path("accessToken").asText();
@@ -246,8 +246,7 @@ class RegistrationFlowIntegrationTest {
         for (var request : Map.of(
                 "/register/initiate", Map.of("identifier", "new@example.com"),
                 "/register/verify", Map.of("mfaToken", tokens.randomToken(), "otp", "012345"),
-                "/register/complete", Map.of("registrationToken", tokens.randomToken(), "password", "new-password"),
-                "/register", Map.of("registrationToken", tokens.randomToken(), "password", "new-password")).entrySet()) {
+                "/register/complete", Map.of("registrationToken", tokens.randomToken(), "password", "new-password")).entrySet()) {
             assertError(call(request.getKey(), request.getValue()), 503, "REGISTRATION_DISABLED");
         }
         verifyNoInteractions(users, notifications, protection);
@@ -456,7 +455,7 @@ class RegistrationFlowIntegrationTest {
             return created(invocation.getArgument(0));
         }).when(users).createUser(any());
         try (var executor = Executors.newSingleThreadExecutor()) {
-            var first = executor.submit(() -> registration.register(RegisterRequest.builder()
+            var first = executor.submit(() -> registration.complete(RegisterRequest.builder()
                     .registrationToken(proof).password("new-password").build(), CLIENT));
             try {
                 assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
@@ -464,7 +463,7 @@ class RegistrationFlowIntegrationTest {
             } finally { release.countDown(); }
             assertThat(first.get(10, TimeUnit.SECONDS).userId()).isEqualTo(42);
         }
-        var retry = call("/register", Map.of("registration_token", proof, "password", "different-password"));
+        var retry = call("/register/complete", Map.of("registration_token", proof, "password", "different-password"));
         assertError(retry, 401, "INVALID_REGISTRATION_TOKEN");
         assertThat(registrations.findGrant(proof)).isEmpty();
         verify(users, times(1)).createUser(any());

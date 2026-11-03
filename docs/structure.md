@@ -39,5 +39,6 @@ and bounds metadata and `UserAccount` still copies its roles into an immutable
 list. HTTP requests continue to use record deserialization and Jakarta validation.
 Sensitive records keep their redacted `toString()` implementations.
 
-This structure needs no database migration. The staged registration API changes the
-old direct `/register` body; see [registration compatibility](registration.md#compatibility-and-verification).
+This structure needs no database migration. The staged registration API creates
+accounts through `/register/complete`.
+See [registration compatibility](registration.md#compatibility-and-verification).

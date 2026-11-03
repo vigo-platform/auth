@@ -71,7 +71,7 @@ class RegistrationServiceTest {
                     : current.toBuilder().emailNotificationEnabled(false).build();
             return "encoded-password";
         });
-        assertThatThrownBy(() -> registration.register(request, client))
+        assertThatThrownBy(() -> registration.complete(request, client))
                 .isInstanceOfSatisfying(AuthException.class, error -> assertThat(error.getCode())
                         .isEqualTo(registrationSwitch ? "REGISTRATION_DISABLED" : "OTP_CHANNEL_DISABLED"));
         verify(passwords).encode("new-password");
@@ -91,7 +91,7 @@ class RegistrationServiceTest {
                 .when(repository).complete(anyString(), anyString());
         else doThrow(new IllegalStateException("test counter failure")).when(protection).clearFailures(any(), anyLong());
 
-        var result = registration.register(request, client);
+        var result = registration.complete(request, client);
         assertThat(result.userId()).isEqualTo(42);
         assertThat(result.status()).isEqualTo(UserAccount.AccountStatus.ACTIVE);
         assertThat(result.tokens()).isSameAs(tokens);
@@ -110,8 +110,8 @@ class RegistrationServiceTest {
         var failure = new DataAccessResourceFailureException("test session storage failure");
         when(sessions.create(created, client)).thenThrow(failure);
 
-        assertThatThrownBy(() -> registration.register(request, client)).isSameAs(failure);
-        assertThatThrownBy(() -> registration.register(request, client)).isInstanceOfSatisfying(AuthException.class,
+        assertThatThrownBy(() -> registration.complete(request, client)).isSameAs(failure);
+        assertThatThrownBy(() -> registration.complete(request, client)).isInstanceOfSatisfying(AuthException.class,
                 error -> assertThat(error.getCode()).isEqualTo("INVALID_REGISTRATION_TOKEN"));
         verify(users).createUser(any());
         verify(sessions).create(created, client);
@@ -124,7 +124,7 @@ class RegistrationServiceTest {
         when(repository.findGrant(request.registrationToken())).thenReturn(Optional.of(grant),
                 state.equals("MISSING") ? Optional.empty() : Optional.of(grant(request.registrationToken(), state)));
         when(repository.claim(anyString(), anyString(), any())).thenReturn(false);
-        assertThatThrownBy(() -> registration.register(request, client)).isInstanceOfSatisfying(AuthException.class,
+        assertThatThrownBy(() -> registration.complete(request, client)).isInstanceOfSatisfying(AuthException.class,
                 error -> assertThat(error.getCode()).isEqualTo(state.equals("CLAIMED")
                         ? "REGISTRATION_IN_PROGRESS" : "INVALID_REGISTRATION_TOKEN"));
         verifyNoInteractions(users);
@@ -134,7 +134,7 @@ class RegistrationServiceTest {
     void anOldCompletedResultIsRejectedBeforePasswordHashingOrUserCreation() {
         when(repository.findGrant(request.registrationToken()))
                 .thenReturn(Optional.of(grant(request.registrationToken(), "COMPLETED")));
-        assertThatThrownBy(() -> registration.register(request, client)).isInstanceOfSatisfying(AuthException.class,
+        assertThatThrownBy(() -> registration.complete(request, client)).isInstanceOfSatisfying(AuthException.class,
                 error -> assertThat(error.getCode()).isEqualTo("INVALID_REGISTRATION_TOKEN"));
         verifyNoInteractions(users, passwords);
     }
@@ -150,7 +150,7 @@ class RegistrationServiceTest {
         logs.start();
         logger.addAppender(logs);
         try {
-            assertThatThrownBy(() -> registration.register(request, client)).satisfies(error -> {
+            assertThatThrownBy(() -> registration.complete(request, client)).satisfies(error -> {
                 if (error instanceof AuthException auth) assertThat(auth.getCode()).isEqualTo(expected);
                 else assertThat(error).isInstanceOf(UserClientException.class);
             });

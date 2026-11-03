@@ -114,7 +114,7 @@ public class RegistrationService {
                 .expiresIn(properties.getRegistrationTokenTtl().toSeconds()).build();
     }
 
-    public RegisterResponse register(RegisterRequest request, ClientInfo client) {
+    public RegisterResponse complete(RegisterRequest request, ClientInfo client) {
         policy.requireRegistrationEnabled();
         protection.checkIp(client);
         PasswordPolicy.validateNewPassword(request.password());

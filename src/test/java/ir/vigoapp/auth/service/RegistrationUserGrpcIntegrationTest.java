@@ -115,7 +115,7 @@ class RegistrationUserGrpcIntegrationTest {
                 .password("example-password").firstName("Test").lastName("User").build();
         var tokens = new TokenResponse("Bearer", "access-token", 300, "refresh-token", 900);
         when(sessions.create(any(), eq(client))).thenReturn(tokens);
-        var result = registration.register(body, client);
+        var result = registration.complete(body, client);
         assertThat(result.userId()).isGreaterThan(3);
         assertThat(result.status()).isEqualTo(UserAccount.AccountStatus.ACTIVE);
         assertThat(result.tokens()).isSameAs(tokens);
@@ -129,7 +129,7 @@ class RegistrationUserGrpcIntegrationTest {
         assertThat(login.user().userId()).isEqualTo(result.userId());
         assertThat(passwords.matches("example-password", login.passwordHash())).isTrue();
         assertThat(email ? users.checkEmailExists(identifier) : users.checkPhoneExists(identifier)).isTrue();
-        assertThatThrownBy(() -> registration.register(body, client)).isInstanceOfSatisfying(AuthException.class,
+        assertThatThrownBy(() -> registration.complete(body, client)).isInstanceOfSatisfying(AuthException.class,
                 error -> assertThat(error.getCode()).isEqualTo("INVALID_REGISTRATION_TOKEN"));
     }
 }

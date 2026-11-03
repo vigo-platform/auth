@@ -2,10 +2,17 @@ info:
   name: Logout
   type: http
   seq: 9
+
 http:
   method: POST
   url: "{{baseUrl}}/api/v1/auth/logout"
-  headers:
-    - name: Authorization
-      value: "Bearer {{accessToken}}"
-  auth: none
+  auth:
+    type: bearer
+    token: eyJraWQiOiJ2aWdvLWF1dGgta2V5LTEiLCJ0eXAiOiJhdCtqd3QiLCJhbGciOiJSUzI1NiJ9.eyJzdWIiOiI2IiwiYXVkIjoidmlnby1hcGkiLCJjcmVkZW50aWFsX3ZlcnNpb24iOjEsIm5iZiI6MTc5MzczNDQwNCwidG9rZW5fdXNlIjoiYWNjZXNzIiwicm9sZXMiOlsiVVNFUiJdLCJpc3MiOiJhdXRoLnZpZ29hcHAuaXIiLCJleHAiOjE3OTM3MzUzMDQsImlhdCI6MTc5MzczNDQwNCwianRpIjoiMzNjODhhY2UtYjMzMS00ZmVhLWIwODMtMzNjYTA5NGYxNmExIiwic2lkIjoiMzJkOTZmMDYtOWVkNC00YzNiLWIzNTAtZmU3NWUxOTYyY2MwIn0.V5mVDVGyVXsXDLFqxSKnUfUooxCiE-PIS-nk4u_YfHQnvaKwB8D5bBHfB9Tp98zDYUnYVPEenlwFiTGKw48yZlDMe_B6y9jyrMMspXRfg5HAaWMfho49fPPV04LGmrdRs2wK9hd6w2aiv_kjnTWPClnCjAmN-Qt4qJJ7hwTPM1Wb9qvzcfEhltamnAkXbcMBlrO3Ubw5XZ31V7fNe1QL5zkyTLWSfVD27EEOHKRhyEY7Go8zplwIwzH7AZGl6telqNSesOUET3xZBIp4At2KZC9LDeNXa4orVYwzqeSX0aLLzhnp5A9hh-rOd0fnHgbi2SPGn269oh6jbm2S6lhctg
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

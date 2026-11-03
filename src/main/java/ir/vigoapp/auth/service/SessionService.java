@@ -16,7 +16,6 @@ import ir.vigoapp.auth.security.jwt.AccessTokenService;
 import ir.vigoapp.auth.security.login.AccountEligibility;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -189,18 +188,6 @@ public class SessionService {
                         .addKeyValue("device_id", client.deviceId()).log("All user sessions logged out.");
             }
         });
-    }
-
-    @Transactional(readOnly = true)
-    public boolean isAccessSessionActive(Jwt jwt) {
-        try {
-            var version = (Number) jwt.getClaim("credential_version");
-            return sessions.existsByIdAndUserIdAndCredentialVersionAndRevokedFalseAndRevokedAtIsNullAndExpiresAtAfter(
-                    UUID.fromString(jwt.getClaimAsString("sid")), Long.parseLong(jwt.getSubject()),
-                    version.longValue(), clock.instant());
-        } catch (IllegalArgumentException | NullPointerException | ClassCastException exception) {
-            return false;
-        }
     }
 
     private void revokeSession(AuthSession session, Instant now, String reason) {

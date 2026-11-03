@@ -70,7 +70,7 @@ class AccessTokenValidationTest {
 
     @Test
     void rejectsExpiredTokensAndIncorrectType() {
-        assertRejected(valid().issuedAt(Instant.now().minusSeconds(300)).expiresAt(Instant.now().minusSeconds(120)));
+        assertRejected(valid().issuedAt(Instant.now().minusSeconds(900)).expiresAt(Instant.now().minusSeconds(1)));
         var header = JwsHeader.with(SignatureAlgorithm.RS256).keyId("test-key").type("JWT").build();
         String value = encoder.encode(JwtEncoderParameters.from(header, valid().build())).getTokenValue();
         assertThatThrownBy(() -> decoder.decode(value)).isInstanceOf(JwtException.class);

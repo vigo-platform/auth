@@ -19,6 +19,7 @@ import org.springframework.security.oauth2.jwt.JwtClaimValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.JwtTypeValidator;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
@@ -26,6 +27,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -80,6 +82,7 @@ public class JwtConfig {
             return OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Invalid access token claims", null));
         };
         decoder.setJwtValidator(JwtValidators.createDefaultWithValidators(
+                new JwtTimestampValidator(Duration.ZERO),
                 new JwtIssuerValidator(jwtProperties.getIssuer()), new JwtTypeValidator("at+jwt"),
                 new JwtClaimValidator<String>("token_use", "access"::equals), claims));
         return decoder;

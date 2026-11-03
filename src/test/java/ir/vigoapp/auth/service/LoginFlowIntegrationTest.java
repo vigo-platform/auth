@@ -730,7 +730,6 @@ class LoginFlowIntegrationTest {
         assertThat(call("/refresh", Map.of("refreshToken", next.path("refreshToken").asText())).getResponse().getStatus()).isEqualTo(401);
         assertThat(sessionRepository.findAll().getFirst().getRevokedReason()).isEqualTo("REFRESH_REUSE");
         assertAllFamiliesRevoked();
-        assertThat(sessions.isAccessSessionActive(decoder.decode(next.path("accessToken").asText()))).isFalse();
     }
 
     @Test
@@ -747,7 +746,7 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void logoutRequiresAccessTokenAndRevokesOnlyItsSessionAfterRotation() throws Exception {
+    void logoutRevokesOnlyItsRefreshFamilyAndAcceptsTheSameAccessTokenUntilExpiry() throws Exception {
         var pair = createSession();
         var other = createSession();
         var next = sessions.refresh(pair.refreshToken(), CLIENT);
@@ -765,12 +764,9 @@ class LoginFlowIntegrationTest {
                     assertThat(token.getRevokedAt()).isNotNull();
                 });
         assertThat(call("/refresh", Map.of("refreshToken", next.refreshToken())).getResponse().getStatus()).isEqualTo(401);
-        assertThat(sessions.isAccessSessionActive(decoder.decode(other.accessToken()))).isTrue();
         assertThat(call("/refresh", Map.of("refreshToken", other.refreshToken())).getResponse().getStatus()).isEqualTo(200);
         mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + pair.accessToken()))
-                .andExpect(status().isUnauthorized());
-        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + next.accessToken()))
-                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -783,8 +779,10 @@ class LoginFlowIntegrationTest {
         mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + first.accessToken()))
                 .andExpect(status().isOk());
         assertThat(sessionRepository.findAll()).allSatisfy(session -> assertThat(session.getRevokedAt()).isNotNull());
-        assertThat(sessions.isAccessSessionActive(decoder.decode(second.accessToken()))).isFalse();
         assertAllFamiliesRevoked();
+        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + second.accessToken()))
+                .andExpect(status().isOk());
+        assertThat(call("/refresh", Map.of("refreshToken", second.refreshToken())).getResponse().getStatus()).isEqualTo(401);
     }
 
     @Test
@@ -822,7 +820,6 @@ class LoginFlowIntegrationTest {
             var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
             assertThat(token.isActive()).isFalse();
             assertThat(token.getRevokedAt()).isNotNull();
-            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isFalse();
         }
         assertThat(refreshRepository.findByTokenHash(tokens.hash(old.refreshToken())).orElseThrow()
                 .getConsumedAt()).isNotNull();
@@ -830,7 +827,6 @@ class LoginFlowIntegrationTest {
             var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
             assertThat(token.isActive()).isTrue();
             assertThat(token.getRevokedAt()).isNull();
-            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isTrue();
             assertThat(call("/refresh", Map.of("refreshToken", pair.refreshToken()))
                     .getResponse().getStatus()).isEqualTo(200);
         }
@@ -852,7 +848,6 @@ class LoginFlowIntegrationTest {
             var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
             assertThat(token.isActive()).isTrue();
             assertThat(token.getRevokedAt()).isNull();
-            assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isTrue();
         }
     }
 
@@ -861,14 +856,13 @@ class LoginFlowIntegrationTest {
     void ineligibleAccountStillRevokesAllCredentialVersions(UserAccount.AccountStatus status, boolean expired)
             throws Exception {
         var old = createSession();
-        var current = sessions.create(account(UserAccount.AccountStatus.ACTIVE, 4, false, true), CLIENT);
+        sessions.create(account(UserAccount.AccountStatus.ACTIVE, 4, false, true), CLIENT);
         setUser(account(status, 4, expired, true));
 
         assertThat(call("/refresh", Map.of("refreshToken", old.refreshToken()))
                 .getResponse().getStatus()).isEqualTo(401);
 
         assertAllFamiliesRevoked();
-        assertThat(sessions.isAccessSessionActive(decoder.decode(current.accessToken()))).isFalse();
     }
 
     @Test
@@ -968,13 +962,10 @@ class LoginFlowIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    void eitherSessionRevocationSignalRejectsAccessAndRefresh(boolean flagOnly) throws Exception {
+    void eitherSessionRevocationSignalRejectsRefresh(boolean flagOnly) throws Exception {
         var pair = createSession();
         var sessionId = refreshRepository.findSessionIdByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
         setRevocationState("auth_sessions", sessionId, flagOnly);
-        assertThat(sessions.isAccessSessionActive(decoder.decode(pair.accessToken()))).isFalse();
-        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + pair.accessToken()))
-                .andExpect(status().isUnauthorized());
         clearInvocations(users);
         assertThatThrownBy(() -> sessions.refresh(pair.refreshToken(), CLIENT)).isInstanceOf(AuthException.class);
         verify(users, never()).getUserById(anyLong());
@@ -1043,13 +1034,11 @@ class LoginFlowIntegrationTest {
     @ValueSource(booleans = {true, false})
     void exactExpiryBoundaryRejectsEvenWhenRevocationFlagsAreFalse(boolean sessionExpiry) {
         var pair = createSession();
-        var jwt = decoder.decode(pair.accessToken());
         var token = refreshRepository.findByTokenHash(tokens.hash(pair.refreshToken())).orElseThrow();
         var session = sessionRepository.findAll().getFirst();
         assertThat(token.isActive()).isTrue();
         assertThat(session.isRevoked()).isFalse();
         now.set(sessionExpiry ? session.getExpiresAt() : token.getExpiresAt());
-        if (sessionExpiry) assertThat(sessions.isAccessSessionActive(jwt)).isFalse();
         assertThatThrownBy(() -> sessions.refresh(pair.refreshToken(), CLIENT)).isInstanceOf(AuthException.class);
         assertAllFamiliesRevoked();
         assertThat(refreshRepository.findById(token.getId()).orElseThrow().getConsumedAt()).isNull();

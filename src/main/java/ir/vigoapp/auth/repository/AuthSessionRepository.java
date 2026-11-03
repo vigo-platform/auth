@@ -15,9 +15,6 @@ public interface AuthSessionRepository extends JpaRepository<AuthSession, UUID> 
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000"))
     Optional<AuthSession> findLockedById(UUID id);
 
-    boolean existsByIdAndUserIdAndCredentialVersionAndRevokedFalseAndRevokedAtIsNullAndExpiresAtAfter(
-            UUID id, long userId, long credentialVersion, Instant now);
-
     @Modifying(flushAutomatically = true)
     @Query("update AuthSession s set s.revoked = true, s.revokedAt = coalesce(s.revokedAt, :now), "
             + "s.revokedReason = coalesce(s.revokedReason, :reason) "

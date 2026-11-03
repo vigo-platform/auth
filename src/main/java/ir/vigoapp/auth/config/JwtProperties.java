@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.validator.constraints.time.DurationMax;
 import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
@@ -25,6 +26,6 @@ public class JwtProperties {
     private String issuer = "auth.vigoapp.ir";
     @NotBlank
     private String audience = "vigo-api";
-    @NotNull @DurationMin(seconds = 30)
+    @NotNull @DurationMin(seconds = 30) @DurationMax(minutes = 15)
     private Duration accessTokenTtl = Duration.ofMinutes(15);
 }

@@ -157,9 +157,9 @@ public class SessionService {
     }
 
     @Transactional
-    public void logout(String rawToken, ClientInfo client) {
-        // A consumed ancestor still identifies its session, so logout also wins a race against rotation.
-        refreshTokens.findSessionIdByTokenHash(tokens.hash(rawToken)).flatMap(sessions::findLockedById).ifPresentOrElse(session -> {
+    public void logout(UUID sessionId, long userId, ClientInfo client) {
+        // Lock the same session as refresh so revocation includes any concurrently rotated token.
+        sessions.findLockedById(sessionId).filter(session -> session.getUserId() == userId).ifPresentOrElse(session -> {
             revokeSession(session, clock.instant(), "LOGOUT");
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override

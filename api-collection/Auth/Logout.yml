@@ -5,8 +5,7 @@ info:
 http:
   method: POST
   url: "{{baseUrl}}/api/v1/auth/logout"
+  headers:
+    - name: Authorization
+      value: "Bearer {{accessToken}}"
   auth: none
-  body:
-    type: json
-    data: |-
-      {"refreshToken":"{{refreshToken}}"}

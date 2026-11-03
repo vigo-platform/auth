@@ -280,8 +280,9 @@ class LoginFlowIntegrationTest {
         when(settings.getCurrent()).thenReturn(AuthSettingDto.builder().defaultOtpChannel(OtpChannel.EMAIL).build());
         var response = call("/refresh", Map.of("refreshToken", pair.refreshToken()));
         assertThat(response.getResponse().getStatus()).isEqualTo(200);
-        String replacement = tree(response).at("/data/refreshToken").asText();
-        assertThat(call("/logout", Map.of("refreshToken", replacement)).getResponse().getStatus()).isEqualTo(200);
+        String accessToken = tree(response).at("/data/accessToken").asText();
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk());
         assertAllFamiliesRevoked();
     }
 
@@ -746,13 +747,28 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void logoutUsingAnAncestorRevokesItsDescendantAndAccessTokens() throws Exception {
+    void logoutRequiresAccessTokenAndRevokesOnlyItsSessionAfterRotation() throws Exception {
         var pair = createSession();
+        var other = createSession();
         var next = sessions.refresh(pair.refreshToken(), CLIENT);
-        assertThat(call("/logout", Map.of("refreshToken", pair.refreshToken())).getResponse().getStatus()).isEqualTo(200);
-        assertThat(call("/logout", Map.of("refreshToken", pair.refreshToken())).getResponse().getStatus()).isEqualTo(200);
+        mvc.perform(post("/api/v1/auth/logout")).andExpect(status().isUnauthorized());
+        assertThat(call("/logout", Map.of("refreshToken", next.refreshToken())).getResponse().getStatus()).isEqualTo(401);
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + next.refreshToken()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + pair.accessToken()))
+                .andExpect(status().isOk());
+        var loggedOutSession = decoder.decode(pair.accessToken()).getClaimAsString("sid");
+        assertThat(refreshRepository.findAll())
+                .filteredOn(token -> token.getSession().getId().toString().equals(loggedOutSession))
+                .hasSize(2).allSatisfy(token -> {
+                    assertThat(token.isActive()).isFalse();
+                    assertThat(token.getRevokedAt()).isNotNull();
+                });
         assertThat(call("/refresh", Map.of("refreshToken", next.refreshToken())).getResponse().getStatus()).isEqualTo(401);
-        assertAllFamiliesRevoked();
+        assertThat(sessions.isAccessSessionActive(decoder.decode(other.accessToken()))).isTrue();
+        assertThat(call("/refresh", Map.of("refreshToken", other.refreshToken())).getResponse().getStatus()).isEqualTo(200);
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + pair.accessToken()))
+                .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + next.accessToken()))
                 .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
@@ -762,6 +778,8 @@ class LoginFlowIntegrationTest {
         mvc.perform(post("/api/v1/auth/logout-all")).andExpect(status().isUnauthorized());
         var first = createSession();
         var second = createSession();
+        mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + first.refreshToken()))
+                .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/v1/auth/logout-all").header("Authorization", "Bearer " + first.accessToken()))
                 .andExpect(status().isOk());
         assertThat(sessionRepository.findAll()).allSatisfy(session -> assertThat(session.getRevokedAt()).isNotNull());
@@ -907,7 +925,8 @@ class LoginFlowIntegrationTest {
         var first = createSession();
         sessions.refresh(first.refreshToken(), CLIENT);
         var loggedOut = createSession();
-        sessions.logout(loggedOut.refreshToken(), CLIENT);
+        var jwt = decoder.decode(loggedOut.accessToken());
+        sessions.logout(java.util.UUID.fromString(jwt.getClaimAsString("sid")), Long.parseLong(jwt.getSubject()), CLIENT);
         var originalTokens = refreshRepository.findAll();
         var consumedAt = originalTokens.stream().filter(t -> t.getConsumedAt() != null)
                 .findFirst().orElseThrow().getConsumedAt();

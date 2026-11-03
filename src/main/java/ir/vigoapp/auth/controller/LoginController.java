@@ -19,6 +19,8 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.UUID;
+
 @RestController
 @RequestMapping("/api/v1/auth")
 @RequiredArgsConstructor
@@ -54,8 +56,8 @@ public class LoginController {
     }
 
     @PostMapping("/logout")
-    public ApiResponse<Void> logout(@Valid @RequestBody RefreshRequest body, HttpServletRequest request) {
-        sessions.logout(body.refreshToken(), ClientInfo.from(request));
+    public ApiResponse<Void> logout(@AuthenticationPrincipal Jwt jwt, HttpServletRequest request) {
+        sessions.logout(UUID.fromString(jwt.getClaimAsString("sid")), Long.parseLong(jwt.getSubject()), ClientInfo.from(request));
         return ApiResponse.success("Logged out successfully.", "خروج با موفقیت انجام شد.", null);
     }
 

@@ -6,7 +6,9 @@ All endpoints use `/api/v1/auth` and the project's `ApiResponse`: `success`, opt
 
 | Method/path | JSON body | Result |
 | --- | --- | --- |
-| `POST /register` | `{"email":"new@example.com","password":"...","phone":"09123456789","firstName":"...","lastName":"..."}` | HTTP 201 with `userId` and User-owned account `status`; email or phone is required, names are optional; no tokens |
+| `POST /register/initiate` | `{"identifier":"new@example.com"}` or a mobile number | Registration OTP challenge; see [registration](registration.md) |
+| `POST /register/verify` | `{"mfaToken":"...","otp":"012345"}` | A temporary `registrationToken`; no account or login tokens |
+| `POST /register/complete` (alias `/register`) | `{"registrationToken":"...","password":"...","firstName":"...","lastName":"..."}` | HTTP 201 with `userId` and User-owned `status`; names optional; no tokens |
 | `POST /login-password` | `{"identifier":"user@example.com","password":"..."}` | Token pair, or an OTP challenge when account two-factor authentication or global password OTP is enabled |
 | `POST /login-otp-email` | `{"email":"user@example.com"}` | Generic OTP challenge response |
 | `POST /login-otp-phone` | `{"phone":"09123456789"}` | Generic SMS challenge response |
@@ -67,15 +69,13 @@ verification of its authentication challenges. A disabled channel returns 503
 may still refresh or log out while new logins/channels are disabled. See
 [runtime settings](auth-settings.md) for propagation and default-channel behavior.
 
-`registerEnabled` independently gates `/register` with 503 `REGISTRATION_DISABLED`.
-Registration normalizes the supplied email/phone, validates an 8-character minimum
-and 72 UTF-8-byte maximum password, bcrypt-encodes it and calls User's `CreateUser`
-RPC. It supports email-only, phone-only or both contacts. Duplicate accounts return
-409 `ACCOUNT_ALREADY_EXISTS`; invalid upstream registration details return 400;
-dependency outages return 503. Registration shares the IP rate limit. Auth does not
-activate the created account, mark contacts verified, issue tokens, or add a new
-verification RPC. A `PENDING_VERIFICATION` account still needs the User service's
-verification/activation flow before it can log in.
+`registerEnabled` independently gates every registration stage with 503
+`REGISTRATION_DISABLED`. Registration now requires an email/SMS OTP before account
+creation. Channel switches, identifier cooldown/failure policies and the IP limit
+also apply. Only the contact proven by registration can reach `CreateUser`; User's
+current deployment creates the account active and verified. Auth still does not
+issue login tokens or add a verification/activation RPC. See [registration](registration.md)
+for the new request bodies, Redis state, delivery integration and retry behavior.
 
 User contract 3.1.0 supplies the per-account `two_factor_enabled` flag. After a correct password, Auth requires OTP when this flag is `true` **or** `AUTH_PASSWORD_OTP_REQUIRED=true`. The global flag defaults to `false` and cannot disable an account's two-factor policy. Both policies use the current settings' `defaultOtpChannel`. No session or access/refresh token is created before successful OTP verification. If the selected channel has no verified destination, login fails with the generic `INVALID_CREDENTIALS` response; it never falls back to password alone. `IN_APP` is only selectable for the password follow-up challenge, and its destination is the user ID.
 

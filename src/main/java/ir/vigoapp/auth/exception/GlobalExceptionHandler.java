@@ -21,6 +21,7 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.Map;
+import java.util.TreeMap;
 
 @Slf4j
 @RestControllerAdvice
@@ -43,10 +44,29 @@ public class GlobalExceptionHandler {
         return builder.body(ApiResponse.failure(exception.getCode(), exception.getMessage(), exception.getMessageFa(), data));
     }
 
-    @ExceptionHandler({MethodArgumentNotValidException.class, ConstraintViolationException.class,
-            HttpMessageNotReadableException.class, HandlerMethodValidationException.class})
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiResponse<?>> invalidFields(MethodArgumentNotValidException exception, HttpServletRequest request) {
+        Map<String, String> errors = new TreeMap<>();
+        for (var error : exception.getBindingResult().getFieldErrors()) {
+            if ("NotBlank".equals(error.getCode())) {
+                errors.put(error.getField(), "This field is required.");
+            } else {
+                // Binding failures can include the rejected value in their message.
+                errors.putIfAbsent(error.getField(), error.isBindingFailure() ? "Invalid value." : error.getDefaultMessage());
+            }
+        }
+        return failure(request, exception, HttpStatus.BAD_REQUEST, "INVALID_REQUEST",
+                "One or more fields are invalid.", "یک یا چند فیلد نامعتبر است.", Map.of("errors", errors));
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<?>> unreadableBody(HttpMessageNotReadableException exception, HttpServletRequest request) {
+        return failure(request, exception, HttpStatus.BAD_REQUEST, "INVALID_REQUEST",
+                "Send a valid JSON body with the expected field types.", "بدنهٔ درخواست باید JSON معتبر با نوع دادهٔ درست باشد.");
+    }
+
+    @ExceptionHandler({ConstraintViolationException.class, HandlerMethodValidationException.class})
     public ResponseEntity<ApiResponse<?>> invalidRequest(Exception exception, HttpServletRequest request) {
-        // Never include rejected values or parser/validation exception text: these may contain credentials.
         return failure(request, exception, HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "The request is invalid.", "اطلاعات درخواست معتبر نیست.");
     }
 
@@ -94,6 +114,11 @@ public class GlobalExceptionHandler {
 
     private ResponseEntity<ApiResponse<?>> failure(HttpServletRequest request, Exception exception, HttpStatus status,
                                                   String code, String message, String messageFa) {
+        return failure(request, exception, status, code, message, messageFa, null);
+    }
+
+    private ResponseEntity<ApiResponse<?>> failure(HttpServletRequest request, Exception exception, HttpStatus status,
+                                                  String code, String message, String messageFa, Object data) {
         var client = ClientInfo.from(request);
         log.atLevel(status.is5xxServerError() ? Level.ERROR : Level.WARN)
                 .addKeyValue("event", "auth_request_failed").addKeyValue("result", "FAILURE")
@@ -103,6 +128,6 @@ public class GlobalExceptionHandler {
                 .addKeyValue("http_method", request.getMethod()).addKeyValue("path", request.getRequestURI())
                 .addKeyValue("ip_address", client.ipAddress()).addKeyValue("user_agent", client.userAgent())
                 .addKeyValue("device_id", client.deviceId()).log("Request could not be completed.");
-        return ResponseEntity.status(status).cacheControl(CacheControl.noStore()).body(ApiResponse.failure(code, message, messageFa, null));
+        return ResponseEntity.status(status).cacheControl(CacheControl.noStore()).body(ApiResponse.failure(code, message, messageFa, data));
     }
 }

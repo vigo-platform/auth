@@ -15,6 +15,9 @@ variables:
   - name: mfaToken
     value: ""
     description: "Copy from data.challenge.mfaToken"
+  - name: registrationIdentifier
+    value: new@example.com
+    description: "Email address or phone number to verify for registration"
   - name: registrationMfaToken
     value: ""
     description: "Copy from registration initiate data.mfaToken; separate from login MFA"

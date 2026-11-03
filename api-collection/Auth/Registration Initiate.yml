@@ -10,7 +10,7 @@ http:
     type: json
     data: |-
       {
-        "identifier": "new@example.com"
+        "identifier": "{{registrationIdentifier}}"
       }
 
 settings:

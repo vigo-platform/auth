@@ -10,8 +10,8 @@ http:
     type: json
     data: |-
       {
-        "mfaToken": "{mlQXtJ7l41cwEYzDkcW8Nh5OAhpjwqRTT3i5Qsq2VJw",
-        "otp": "50861"
+        "mfaToken": "{{registrationMfaToken}}",
+        "otp": "{{registrationOtp}}"
       }
 
 settings:

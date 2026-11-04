@@ -5,17 +5,25 @@ import ir.vigoapp.auth.security.handler.CustomAuthEntryPointHandler;
 import ir.vigoapp.auth.security.jwt.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.util.StringUtils;
 
 /**
  * <h2>Core Security Configuration</h2>
@@ -51,6 +59,28 @@ public class SecurityConfig {
         var registration = new FilterRegistrationBean<>(jwtAuthenticationFilter);
         registration.setEnabled(false);
         return registration;
+    }
+
+    @Bean
+    @Order(1)
+    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http, PasswordEncoder passwordEncoder,
+                                                           @Value("${AUTH_METRICS_PASSWORD:}") String password) throws Exception {
+        var users = new InMemoryUserDetailsManager();
+        if (StringUtils.hasText(password)) {
+            users.createUser(User.withUsername("prometheus").password(passwordEncoder.encode(password))
+                    .roles("METRICS").build());
+        }
+        var provider = new DaoAuthenticationProvider(users);
+        provider.setPasswordEncoder(passwordEncoder);
+
+        return http.securityMatcher("/actuator/**")
+                .authenticationProvider(provider)
+                .httpBasic(Customizer.withDefaults())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.GET, "/actuator/prometheus").hasRole("METRICS")
+                        .anyRequest().denyAll())
+                .build();
     }
 
     @Bean

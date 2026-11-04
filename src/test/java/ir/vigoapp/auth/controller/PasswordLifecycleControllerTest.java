@@ -1,6 +1,7 @@
 package ir.vigoapp.auth.controller;
 
 import ir.vigoapp.auth.config.ApplicationProperties;
+import ir.vigoapp.auth.config.AuthenticationConfig;
 import ir.vigoapp.auth.config.SecurityConfig;
 import ir.vigoapp.auth.exception.GlobalExceptionHandler;
 import ir.vigoapp.auth.security.handler.CustomAccessDeniedHandler;
@@ -14,6 +15,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.junit.jupiter.web.SpringJUnitWebConfig;
 import org.springframework.test.web.servlet.MockMvc;
@@ -91,6 +93,11 @@ class PasswordLifecycleControllerTest {
         @Bean
         JwtDecoder jwtDecoder() {
             return token -> { throw new AssertionError("No bearer token supplied"); };
+        }
+
+        @Bean
+        PasswordEncoder passwordEncoder() {
+            return new AuthenticationConfig().passwordEncoder();
         }
 
         @Bean

@@ -21,7 +21,6 @@ import org.springframework.validation.annotation.Validated;
 public class ApplicationProperties {
     private String[] publicPaths = {
             "/.well-known/jwks.json",
-            "/actuator/**",
             "/error",
             "/favicon.ico"
     };

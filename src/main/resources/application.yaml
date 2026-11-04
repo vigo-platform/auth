@@ -42,7 +42,6 @@ app:
     - "/api/v1/auth/verify"
     - "/api/v1/auth/refresh"
     - "/.well-known/jwks.json"
-    - "/actuator/**"
     - "/error"
     - "/favicon.ico"
   # Defaults for initializing a missing settings record; keep in sync with .env.example.

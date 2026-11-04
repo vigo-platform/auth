@@ -3,6 +3,10 @@ variables:
   - name: baseUrl
     value: http://localhost:8080
     description: ""
+  - name: metricsPassword
+    value: ""
+    secret: true
+    description: "Use the AUTH_METRICS_PASSWORD configured on the Auth server"
   - name: userGrpcUrl
     value: http://127.0.0.1:50051
     description: ""

@@ -59,6 +59,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -72,6 +74,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.data.redis.port=${AUTH_TEST_REDIS_PORT}",
         "spring.data.redis.username=", "spring.data.redis.password=", "spring.data.redis.database=0",
         "auth.otp-secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "AUTH_METRICS_PASSWORD=scrape-test-password",
         "app.user-grpc.host=127.0.0.1", "app.user-grpc.port=50051"
 })
 @AutoConfigureMockMvc
@@ -135,6 +138,23 @@ class LoginFlowIntegrationTest {
         doThrow(new UserClientException(UserClientException.Code.NOT_FOUND, "GetUserLoginInfoByPhone"))
                 .when(users).getLoginInfoByPhone(anyString());
         setUser(user);
+    }
+
+    @Test
+    void onlyThePrometheusAccountCanScrapeMetrics() throws Exception {
+        String path = "/actuator/prometheus";
+        var userTokens = createSession();
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(get(path).header("Authorization", "Bearer " + userTokens.accessToken()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get(path).with(httpBasic("prometheus", "wrong-password")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get(path).with(httpBasic("prometheus", "scrape-test-password")))
+                .andExpect(status().isOk());
+        mvc.perform(get("/actuator").with(httpBasic("prometheus", "scrape-test-password")))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/auth/logout").with(httpBasic("prometheus", "scrape-test-password")))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -1164,6 +1184,12 @@ class LoginFlowIntegrationTest {
         assertThat(call(route, Map.of("passwordChangeToken", token, "newPassword", newPassword))
                 .getResponse().getStatus()).isEqualTo(401);
         verify(users, times(1)).changeUserPassword(any());
+
+        String refreshToken = data.at("/tokens/refreshToken").asText();
+        assertThat(refreshToken).isNotBlank();
+        var refreshed = call("/refresh", Map.of("refreshToken", refreshToken));
+        assertThat(refreshed.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(refreshed).at("/data/refreshToken").asText()).isNotBlank().isNotEqualTo(refreshToken);
     }
 
     @Test

@@ -114,6 +114,31 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Prepare Maven settings for GitHub Packages
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME || vars.MAVEN_USERNAME }}
+          MAVEN_TOKEN: ${{ secrets.MAVEN_TOKEN }}
+        shell: bash
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          username = os.environ["MAVEN_USERNAME"]
+          token = os.environ["MAVEN_TOKEN"]
+          if not username or not token:
+              raise SystemExit("Set MAVEN_USERNAME and make the MAVEN_TOKEN secret available to this repository.")
+
+          settings = ET.Element("settings")
+          server = ET.SubElement(ET.SubElement(settings, "servers"), "server")
+          ET.SubElement(server, "id").text = "github-vigo-contracts"
+          ET.SubElement(server, "username").text = username
+          ET.SubElement(server, "password").text = token
+          ET.ElementTree(settings).write(Path(os.environ["RUNNER_TEMP"]) / "maven-settings.xml", encoding="utf-8")
+          PY
+
       - name: Build and push Docker image
         id: build_push
         uses: docker/build-push-action@v6
@@ -121,6 +146,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          secret-files: maven_settings=${{ runner.temp }}/maven-settings.xml
           tags: ${{ steps.resolve_tag.outputs.docker_tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

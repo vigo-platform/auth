@@ -11,19 +11,23 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.userdetails.User;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.util.StringUtils;
+
+import java.security.MessageDigest;
+import java.util.List;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * <h2>Core Security Configuration</h2>
@@ -63,18 +67,20 @@ public class SecurityConfig {
 
     @Bean
     @Order(1)
-    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http, PasswordEncoder passwordEncoder,
+    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http,
                                                            @Value("${AUTH_METRICS_PASSWORD:}") String password) throws Exception {
-        var users = new InMemoryUserDetailsManager();
-        if (StringUtils.hasText(password)) {
-            users.createUser(User.withUsername("prometheus").password(passwordEncoder.encode(password))
-                    .roles("METRICS").build());
-        }
-        var provider = new DaoAuthenticationProvider(users);
-        provider.setPasswordEncoder(passwordEncoder);
+        byte[] expectedPassword = StringUtils.hasText(password) ? password.getBytes(UTF_8) : new byte[0];
+        var authorities = List.of(new SimpleGrantedAuthority("ROLE_METRICS"));
 
         return http.securityMatcher("/actuator/**")
-                .authenticationProvider(provider)
+                .authenticationManager(request -> {
+                    if (expectedPassword.length == 0 || !"prometheus".equals(request.getName())
+                            || !(request.getCredentials() instanceof String suppliedPassword)
+                            || !MessageDigest.isEqual(expectedPassword, suppliedPassword.getBytes(UTF_8))) {
+                        throw new BadCredentialsException("Invalid metrics credentials");
+                    }
+                    return UsernamePasswordAuthenticationToken.authenticated(request.getName(), null, authorities);
+                })
                 .httpBasic(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth

@@ -149,6 +149,8 @@ class LoginFlowIntegrationTest {
                 .andExpect(status().isUnauthorized());
         mvc.perform(get(path).with(httpBasic("prometheus", "wrong-password")))
                 .andExpect(status().isUnauthorized());
+        mvc.perform(get(path).with(httpBasic("other-user", "scrape-test-password")))
+                .andExpect(status().isUnauthorized());
         mvc.perform(get(path).with(httpBasic("prometheus", "scrape-test-password")))
                 .andExpect(status().isOk());
         mvc.perform(get("/actuator").with(httpBasic("prometheus", "scrape-test-password")))

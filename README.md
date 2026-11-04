@@ -14,6 +14,10 @@ Start PostgreSQL, Redis, and the User service. Set the environment variables lis
 
 Connect `NotificationService` to a delivery provider to send email and SMS in a running environment.
 
+## Running behind Nginx
+
+Spring Boot uses forwarded headers to expose the client IP for audit logs, refresh token records, and rate limits. Keep the Auth port private and allow requests through the trusted Nginx proxy. Once Nginx resolves the client IP from trusted Cloudflare addresses, configure the Auth location to overwrite `X-Forwarded-For` with `$remote_addr` and clear `Forwarded`. Clear or overwrite the other `X-Forwarded-*` headers consumed by Spring as well. For a deployment that accepts direct requests, set `SERVER_FORWARD_HEADERS_STRATEGY=none`.
+
 ## Docker build
 
 GitHub Actions uses `MAVEN_USERNAME` (a secret or variable) and `MAVEN_TOKEN` (a secret) to create temporary Maven settings for the Docker build. The token must be a classic GitHub PAT with `read:packages`, and its owner must have access to the contracts package.

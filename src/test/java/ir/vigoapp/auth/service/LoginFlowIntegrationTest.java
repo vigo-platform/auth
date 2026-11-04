@@ -1350,12 +1350,17 @@ class LoginFlowIntegrationTest {
     }
 
     @Test
-    void forgedForwardedHeaderDoesNotBypassIpLimit() throws Exception {
+    void forwardedClientAddressesHaveSeparateIpLimits() throws Exception {
         properties.setIpMaxRequests(1);
-        password("user@example.com", "wrong-password");
+        var body = json.writeValueAsString(Map.of("identifier", "user@example.com", "password", "correct-password"));
         mvc.perform(post("/api/v1/auth/login-password").header("X-Forwarded-For", "198.51.100.20")
-                        .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(
-                                Map.of("identifier", "user@example.com", "password", "correct-password"))))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/auth/login-password").header("X-Forwarded-For", "2001:db8::1")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/auth/login-password").header("X-Forwarded-For", "198.51.100.20")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isTooManyRequests()).andExpect(jsonPath("$.code").value("RATE_LIMITED"));
     }
 
@@ -1511,9 +1516,9 @@ class LoginFlowIntegrationTest {
     void loginAndRefreshAuditFieldsIncludeRealIpAndClientMetadataWithoutCredentials() throws Exception {
         captureAuditLogs();
         var response = mvc.perform(post("/api/v1/auth/login-password").with(request -> {
-                    request.setRemoteAddr("198.51.100.24"); return request;
+                    request.setRemoteAddr("172.18.0.1"); return request;
                 }).header("User-Agent", "audit-browser").header("X-Device-Id", "audit-device")
-                .header("X-Forwarded-For", "203.0.113.99").contentType(MediaType.APPLICATION_JSON)
+                .header("X-Forwarded-For", "198.51.100.24").contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("identifier", "user@example.com", "password", "correct-password"))))
                 .andExpect(status().isOk()).andReturn();
         var pair = tree(response).at("/data/tokens");
@@ -1525,9 +1530,10 @@ class LoginFlowIntegrationTest {
         assertThat(field(success, "auth_method")).isEqualTo("PASSWORD");
         assertThat(success.getFormattedMessage()).isEqualTo("User logged in successfully.");
         mvc.perform(post("/api/v1/auth/refresh").with(request -> {
-                    request.setRemoteAddr("198.51.100.25"); return request;
+                    request.setRemoteAddr("172.18.0.1"); return request;
                 }).header("User-Agent", "refresh-browser").header("X-Device-Id", "refresh-device")
-                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(
+                .header("X-Forwarded-For", "198.51.100.25").contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(
                         Map.of("refreshToken", pair.path("refreshToken").asText()))))
                 .andExpect(status().isOk());
         var rotated = auditEvent("refresh_rotated");

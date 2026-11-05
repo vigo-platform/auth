@@ -1,6 +1,7 @@
 package ir.vigoapp.auth.config;
 
 import io.grpc.ManagedChannel;
+import io.micrometer.observation.ObservationRegistry;
 import ir.vigoapp.auth.client.user.UserGrpcClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -17,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class UserGrpcConfigTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
+            .withBean(ObservationRegistry.class, ObservationRegistry::create)
             .withUserConfiguration(ApplicationProperties.class, UserGrpcConfig.class, UserGrpcClient.class)
             .withPropertyValues("app.user-grpc.host=localhost", "app.user-grpc.port=50051",
                     "app.auth-defaults.default-otp-channel=EMAIL");

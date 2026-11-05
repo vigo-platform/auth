@@ -5,8 +5,7 @@ info:
 
 grpc:
   url: "{{userGrpcUrl}}"
-  method: /vigo.user.v1.UserService/ChangeUserPassword
-  methodType: unary
+  method: ""
   message:
     - title: message 1
       message: |-

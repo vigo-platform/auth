@@ -16,6 +16,11 @@ http:
         "lastName": "User"
       }
 
+runtime:
+  variables:
+    - name: registrationToken
+      value: zNJfsoiSwPbJYSAoE_IjPmOLC6aM12b4bl3IPGSh7VU
+
 settings:
   encodeUrl: true
   timeout: 0

@@ -2,6 +2,8 @@ package ir.vigoapp.auth.config;
 
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.micrometer.core.instrument.binder.grpc.ObservationGrpcClientInterceptor;
+import io.micrometer.observation.ObservationRegistry;
 import ir.vigoapp.contracts.user.v1.UserServiceGrpc;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -14,9 +16,10 @@ public class UserGrpcConfig {
     private final ApplicationProperties applicationProperties;
 
     @Bean(destroyMethod = "shutdownNow")
-    public ManagedChannel userGrpcChannel() {
+    public ManagedChannel userGrpcChannel(ObservationRegistry observations) {
         var properties = applicationProperties.getUserGrpc();
         return ManagedChannelBuilder.forAddress(properties.getHost(), properties.getPort())
+                .intercept(new ObservationGrpcClientInterceptor(observations))
                 .usePlaintext()
                 .disableRetry()
                 .disableServiceConfigLookUp()

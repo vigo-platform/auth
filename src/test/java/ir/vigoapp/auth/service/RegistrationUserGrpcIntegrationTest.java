@@ -1,6 +1,7 @@
 package ir.vigoapp.auth.service;
 
 import io.grpc.ManagedChannel;
+import io.micrometer.observation.ObservationRegistry;
 import ir.vigoapp.auth.client.user.UserGrpcClient;
 import ir.vigoapp.auth.client.user.model.UserAccount;
 import ir.vigoapp.auth.config.ApplicationProperties;
@@ -62,7 +63,7 @@ class RegistrationUserGrpcIntegrationTest {
         application.getUserGrpc().setHost("127.0.0.1");
         application.getUserGrpc().setPort(Integer.parseInt(System.getenv("AUTH_TEST_USER_GRPC_PORT")));
         var grpc = new UserGrpcConfig(application);
-        channel = grpc.userGrpcChannel();
+        channel = grpc.userGrpcChannel(ObservationRegistry.NOOP);
         users = new UserGrpcClient(grpc.userServiceStub(channel), application);
         var properties = new AuthProperties();
         properties.setOtpSecret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");

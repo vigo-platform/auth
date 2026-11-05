@@ -3,6 +3,14 @@ package ir.vigoapp.auth.client.user;
 import io.grpc.*;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.handler.PropagatingSenderTracingObservationHandler;
+import io.micrometer.tracing.otel.bridge.OtelCurrentTraceContext;
+import io.micrometer.tracing.otel.bridge.OtelPropagator;
+import io.micrometer.tracing.otel.bridge.OtelTracer;
+import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
+import io.opentelemetry.context.propagation.ContextPropagators;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
 import ir.vigoapp.auth.client.user.exception.UserClientException;
 import ir.vigoapp.auth.client.user.model.ChangePasswordCommand;
 import ir.vigoapp.auth.client.user.model.CreateUserCommand;
@@ -19,10 +27,13 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.*;
 
 class UserGrpcClientTest {
+    private final ObservationRegistry observations = ObservationRegistry.create();
+    private final AtomicReference<String> receivedTraceparent = new AtomicReference<>();
     private Server server;
     private ApplicationProperties properties;
     private ManagedChannel channel;
@@ -31,12 +42,21 @@ class UserGrpcClientTest {
 
     @BeforeEach
     void start() throws Exception {
-        server = NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0)).addService(user).build().start();
+        server = NettyServerBuilder.forAddress(new InetSocketAddress("127.0.0.1", 0))
+                .addService(user)
+                .intercept(new ServerInterceptor() {
+                    @Override
+                    public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+                            ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
+                        receivedTraceparent.set(headers.get(Metadata.Key.of("traceparent", Metadata.ASCII_STRING_MARSHALLER)));
+                        return next.startCall(call, headers);
+                    }
+                }).build().start();
         properties = new ApplicationProperties();
         properties.getUserGrpc().setHost("127.0.0.1");
         properties.getUserGrpc().setPort(server.getPort());
         var config = new UserGrpcConfig(properties);
-        channel = config.userGrpcChannel();
+        channel = config.userGrpcChannel(observations);
         client = new UserGrpcClient(config.userServiceStub(channel), properties);
     }
 
@@ -44,6 +64,26 @@ class UserGrpcClientTest {
     void stop() throws Exception {
         if (channel != null) channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
         if (server != null) server.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void propagatesTheRequestTraceToUserService() {
+        var propagators = ContextPropagators.create(W3CTraceContextPropagator.getInstance());
+        try (var telemetry = OpenTelemetrySdk.builder().setPropagators(propagators).build()) {
+            var otelTracer = telemetry.getTracer("auth-test");
+            var tracer = new OtelTracer(otelTracer, new OtelCurrentTraceContext(), event -> {});
+            observations.observationConfig().observationHandler(new PropagatingSenderTracingObservationHandler<>(
+                    tracer, new OtelPropagator(propagators, otelTracer)));
+
+            var requestSpan = tracer.nextSpan().name("registration").start();
+            try (var scope = tracer.withSpan(requestSpan)) {
+                client.createUser(new CreateUserCommand("user@example.com", null, "A", "B", "hash"));
+                assertThat(receivedTraceparent.get()).matches("00-" + requestSpan.context().traceId() + "-[0-9a-f]{16}-[0-9a-f]{2}")
+                        .doesNotContain("-" + requestSpan.context().spanId() + "-");
+            } finally {
+                requestSpan.end();
+            }
+        }
     }
 
     @Test

@@ -38,6 +38,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -50,6 +51,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
@@ -339,7 +341,22 @@ class LoginFlowIntegrationTest {
         assertThat(unknown.path("message")).isEqualTo(known.path("message"));
         assertThat(unknown.at("/data/challenge/mfaToken").asText()).matches("[A-Za-z0-9_-]{43}");
         assertThat(known.at("/data/challenge/mfaToken").asText()).matches("[A-Za-z0-9_-]{43}");
-        verify(notifications).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), matches("[0-9]{6}"));
+        verify(notifications).sendLoginOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), matches("[0-9]{6}"), any(), any());
+    }
+
+    @Test
+    void brokerFailureDoesNotExposeTheAccountOrLeaveAUsableChallenge() throws Exception {
+        doThrow(new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "OTP_DELIVERY_UNAVAILABLE",
+                "Test delivery failure.", "خطای ارسال آزمایشی."))
+                .when(notifications).sendLoginOtp(eq(OtpChannel.EMAIL), anyString(), anyString(), any(), any());
+
+        var unknown = call("/login-otp-email", Map.of("email", "missing@example.com"));
+        var known = call("/login-otp-email", Map.of("email", "user@example.com"));
+        assertThat(known.getResponse().getStatus()).isEqualTo(unknown.getResponse().getStatus()).isEqualTo(200);
+        assertThat(tree(known).path("message")).isEqualTo(tree(unknown).path("message"));
+        String token = tree(known).at("/data/challenge/mfaToken").asText();
+        assertThat(token).matches("[A-Za-z0-9_-]{43}");
+        assertThat(challenges.find(token)).isEmpty();
     }
 
     @Test
@@ -347,7 +364,7 @@ class LoginFlowIntegrationTest {
         var result = call("/login-otp-phone", Map.of("phone", "09123456789"));
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         verify(users).getLoginInfoByPhone("+989123456789");
-        verify(notifications).sendLoginOtp(eq(42L), eq(OtpChannel.SMS), eq("+989123456789"), anyString());
+        verify(notifications).sendLoginOtp(eq(OtpChannel.SMS), eq("+989123456789"), anyString(), any(), any());
     }
 
     @ParameterizedTest
@@ -364,7 +381,7 @@ class LoginFlowIntegrationTest {
         assertThat(stored.destination()).isEqualTo("09111111111");
         assertThat(stored.identifierKey()).isEqualTo("identifier:+989111111111");
         assertThat(stored.code()).matches("[0-9]{6}");
-        verify(notifications).sendLoginOtp(42L, OtpChannel.SMS, "09111111111", stored.code());
+        verify(notifications).sendLoginOtp(eq(OtpChannel.SMS), eq("09111111111"), eq(stored.code()), any(), any());
 
         var resend = call("/login-otp-phone", Map.of("phone", "+989111111111"));
         assertThat(resend.getResponse().getStatus()).isEqualTo(429);
@@ -498,7 +515,7 @@ class LoginFlowIntegrationTest {
         assertThat(retryAfter).isBetween(Math.max(1, (afterMs + 999) / 1000), (beforeMs + 999) / 1000);
         assertThat(tree(result).at("/data/retryAfterSeconds").asLong()).isEqualTo(retryAfter);
         assertThat(afterMs).isPositive().isLessThanOrEqualTo(beforeMs);
-        verify(notifications, times(1)).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), anyString(), anyString());
+        verify(notifications, times(1)).sendLoginOtp(eq(OtpChannel.EMAIL), anyString(), anyString(), any(), any());
         assertThat(redis.keys("auth:otp:{login}:challenge:*")).hasSize(1);
     }
 
@@ -535,7 +552,7 @@ class LoginFlowIntegrationTest {
         assertThat(result.at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
         assertThat(refreshRepository.count()).isZero();
         var code = ArgumentCaptor.forClass(String.class);
-        verify(notifications).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
+        verify(notifications).sendLoginOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture(), any(), any());
         assertThat(verifyOtp(result.at("/data/challenge/mfaToken").asText(), code.getValue()).getResponse().getStatus()).isEqualTo(200);
     }
 
@@ -565,7 +582,7 @@ class LoginFlowIntegrationTest {
         assertThat(sessionRepository.count()).isZero();
         assertThat(refreshRepository.count()).isZero();
         var code = ArgumentCaptor.forClass(String.class);
-        verify(notifications).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
+        verify(notifications).sendLoginOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture(), any(), any());
         String token = result.at("/data/challenge/mfaToken").asText();
         assertThat(challenges.find(token).orElseThrow().passwordVerified()).isTrue();
         assertThat(redis.opsForHash().get("auth:otp:{login}:challenge:" + token, "passwordVerified")).isEqualTo("true");
@@ -603,7 +620,7 @@ class LoginFlowIntegrationTest {
             case IN_APP -> "42";
         };
         var code = ArgumentCaptor.forClass(String.class);
-        verify(notifications).sendLoginOtp(eq(42L), eq(channel), eq(destination), code.capture());
+        verify(notifications).sendLoginOtp(eq(channel), eq(destination), code.capture(), any(), any());
         assertThat(verifyOtp(result.at("/data/challenge/mfaToken").asText(), code.getValue()).getResponse().getStatus()).isEqualTo(200);
     }
 
@@ -1146,7 +1163,8 @@ class LoginFlowIntegrationTest {
         assertThat(data.has("passwordChange")).isFalse();
         String mfaToken = data.at("/challenge/mfaToken").asText();
         var challenge = challenges.find(mfaToken).orElseThrow();
-        verify(notifications).sendLoginOtp(42, OtpChannel.EMAIL, "user@example.com", challenge.code());
+        verify(notifications).sendLoginOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), eq(challenge.code()),
+                argThat(expiry -> expiry.toEpochMilli() == challenge.expiresAt().toEpochMilli()), any());
         String incorrect = challenge.code().equals("000000") ? "000001" : "000000";
         assertThat(verifyOtp(mfaToken, incorrect).getResponse().getStatus()).isEqualTo(401);
         assertPasswordChangeGrant(verifyOtp(mfaToken, challenge.code()));
@@ -1247,7 +1265,7 @@ class LoginFlowIntegrationTest {
         assertThat(started.getResponse().getStatus()).isEqualTo(200);
         assertThat(tree(started).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
         var otp = ArgumentCaptor.forClass(String.class);
-        verify(notifications).sendPasswordChangeOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), otp.capture());
+        verify(notifications).sendPasswordChangeOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), otp.capture(), any(), any());
         String verify = "/password/change/verify";
         var proof = Map.of("mfaToken", tree(started).at("/data/challenge/mfaToken").asText(), "otp", otp.getValue());
         assertThat(call(verify, proof, other.accessToken()).getResponse().getStatus()).isEqualTo(401);
@@ -1283,7 +1301,10 @@ class LoginFlowIntegrationTest {
 
         String initiate = "/password/reset/initiate";
         var decoy = call(initiate, Map.of("identifier", "missing@example.com"));
-        var real = call(initiate, Map.of("identifier", "user@example.com"));
+        var correlationId = UUID.randomUUID();
+        var real = mvc.perform(post("/api/v1/auth" + initiate).contentType(MediaType.APPLICATION_JSON)
+                .header("Accept-Language", "en-US").header("X-Correlation-ID", correlationId.toString())
+                .content(json.writeValueAsString(Map.of("identifier", "user@example.com")))).andReturn();
         assertThat(decoy.getResponse().getStatus()).isEqualTo(200);
         assertThat(real.getResponse().getStatus()).isEqualTo(200);
         assertThat(tree(decoy).path("message")).isEqualTo(tree(real).path("message"));
@@ -1292,7 +1313,8 @@ class LoginFlowIntegrationTest {
         assertThat(tree(real).path("data").has("passwordReset")).isFalse();
         var emailCode = ArgumentCaptor.forClass(String.class);
         verify(notifications, timeout(5000)).sendPasswordResetOtp(
-                eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), emailCode.capture());
+                eq(OtpChannel.EMAIL), eq("user@example.com"), emailCode.capture(), eq(now.get().plus(properties.getOtpTtl())),
+                eq(new OtpNotificationContext(correlationId, "en")));
 
         String verify = "/password/reset/verify";
         assertThat(call(verify, Map.of("mfaToken", tree(decoy).at("/data/challenge/mfaToken").asText(),
@@ -1305,7 +1327,7 @@ class LoginFlowIntegrationTest {
         assertThat(tree(second).path("data").has("passwordReset")).isFalse();
         assertThat(call(verify, firstProof).getResponse().getStatus()).isEqualTo(401);
         var smsCode = ArgumentCaptor.forClass(String.class);
-        verify(notifications).sendPasswordResetOtp(eq(42L), eq(OtpChannel.SMS), eq("+989123456789"), smsCode.capture());
+        verify(notifications).sendPasswordResetOtp(eq(OtpChannel.SMS), eq("+989123456789"), smsCode.capture(), any(), any());
         String secondToken = tree(second).at("/data/challenge/mfaToken").asText();
         assertThat(call(verify, Map.of("mfaToken", secondToken, "otp", emailCode.getValue()))
                 .getResponse().getStatus()).isEqualTo(401);
@@ -1436,7 +1458,7 @@ class LoginFlowIntegrationTest {
         });
         assertThat(results).containsExactlyInAnyOrder("SUCCESS", "OTP_COOLDOWN");
         assertThat(redis.keys("auth:otp:{login}:challenge:*")).hasSize(1);
-        verify(notifications, times(1)).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), anyString(), anyString());
+        verify(notifications, times(1)).sendLoginOtp(eq(OtpChannel.EMAIL), anyString(), anyString(), any(), any());
     }
 
     @Test
@@ -1707,7 +1729,7 @@ class LoginFlowIntegrationTest {
         var response = call("/login-otp-email", Map.of("email", "user@example.com"));
         assertThat(response.getResponse().getStatus()).isEqualTo(200);
         var code = ArgumentCaptor.forClass(String.class);
-        verify(notifications, atLeastOnce()).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
+        verify(notifications, atLeastOnce()).sendLoginOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture(), any(), any());
         return new Challenge(tree(response).at("/data/challenge/mfaToken").asText(), code.getAllValues().getLast());
     }
 
@@ -1716,7 +1738,7 @@ class LoginFlowIntegrationTest {
         assertThat(response.getResponse().getStatus()).isEqualTo(200);
         assertThat(tree(response).at("/data/step").asText()).isEqualTo("OTP_REQUIRED");
         var code = ArgumentCaptor.forClass(String.class);
-        verify(notifications, atLeastOnce()).sendLoginOtp(eq(42L), eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture());
+        verify(notifications, atLeastOnce()).sendLoginOtp(eq(OtpChannel.EMAIL), eq("user@example.com"), code.capture(), any(), any());
         return new Challenge(tree(response).at("/data/challenge/mfaToken").asText(), code.getAllValues().getLast());
     }
 

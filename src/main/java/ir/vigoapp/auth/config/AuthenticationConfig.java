@@ -23,11 +23,20 @@ public class AuthenticationConfig {
 
     @Bean(defaultCandidate = false)
     public ThreadPoolTaskExecutor passwordRecoveryExecutor() {
+        return otpExecutor("password-recovery-");
+    }
+
+    @Bean(defaultCandidate = false)
+    public ThreadPoolTaskExecutor loginOtpDeliveryExecutor() {
+        return otpExecutor("login-otp-delivery-");
+    }
+
+    private static ThreadPoolTaskExecutor otpExecutor(String threadNamePrefix) {
         var executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(4);
         executor.setMaxPoolSize(4);
         executor.setQueueCapacity(64);
-        executor.setThreadNamePrefix("password-recovery-");
+        executor.setThreadNamePrefix(threadNamePrefix);
         return executor;
     }
 

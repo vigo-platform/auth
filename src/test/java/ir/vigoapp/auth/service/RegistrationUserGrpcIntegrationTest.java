@@ -74,11 +74,11 @@ class RegistrationUserGrpcIntegrationTest {
                         .emailNotificationEnabled(true).smsNotificationEnabled(true).build();
             }
         };
-        var notifications = new NotificationService() {
-            @Override public void sendRegistrationOtp(OtpChannel selected, String destination, String code) {
-                deliveredCode.set(code);
-            }
-        };
+        var notifications = mock(NotificationService.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        doAnswer(invocation -> {
+            deliveredCode.set(invocation.getArgument(2));
+            return null;
+        }).when(notifications).sendRegistrationOtp(any(), anyString(), anyString(), any(), any());
         passwords = new AuthenticationConfig().passwordEncoder();
         sessions = mock(SessionService.class, withSettings().mockMaker(MockMakers.SUBCLASS));
         registration = new RegistrationService(new AuthPolicyService(settings),

@@ -19,6 +19,9 @@ import ir.vigoapp.auth.security.SecureTokens;
 import ir.vigoapp.auth.security.login.AccountEligibility;
 import ir.vigoapp.auth.security.login.LoginIdentifier;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -43,13 +46,15 @@ public class LoginService {
     private final PasswordEncoder passwords;
     private final AuthProperties properties;
     private final Clock clock;
+    private final TaskExecutor loginOtpDeliveryExecutor;
     private final String dummyPasswordHash;
 
     public LoginService(UserGrpcClient users, AuthPolicyService policy, SessionService sessions,
                         PasswordLifecycleService passwordLifecycle,
                         AuthProtectionService protection, OtpChallengeRepository challenges,
                         NotificationService notifications, SecureTokens tokens, PasswordEncoder passwords,
-                        AuthProperties properties, Clock clock) {
+                        AuthProperties properties, Clock clock,
+                        @Qualifier("loginOtpDeliveryExecutor") TaskExecutor loginOtpDeliveryExecutor) {
         this.users = users;
         this.policy = policy;
         this.sessions = sessions;
@@ -61,6 +66,7 @@ public class LoginService {
         this.passwords = passwords;
         this.properties = properties;
         this.clock = clock;
+        this.loginOtpDeliveryExecutor = loginOtpDeliveryExecutor;
         dummyPasswordHash = passwords.encode(tokens.randomToken());
     }
 
@@ -259,7 +265,17 @@ public class LoginService {
                 .passwordVerified(passwordVerified)
                 .build();
         challenges.create(challenge, protection.accountKey(user.userId()));
-        notifications.sendLoginOtp(user.userId(), channel, AccountEligibility.destination(user, channel), code);
+        var context = OtpNotificationContext.current();
+        if (channel == OtpChannel.EMAIL && !passwordVerified) {
+            // Passwordless callers get the same response regardless of account eligibility or delivery.
+            try {
+                loginOtpDeliveryExecutor.execute(() -> deliverOtp(challenge, context, true));
+            } catch (TaskRejectedException exception) {
+                discardFailedChallenge(challenge, exception);
+            }
+        } else {
+            deliverOtp(challenge, context, false);
+        }
         log.atInfo().addKeyValue("event", "otp_challenge_created").addKeyValue("user_id", user.userId())
                 .addKeyValue("auth_method", passwordVerified ? "PASSWORD_OTP" : "OTP")
                 .addKeyValue("two_factor_enabled", user.twoFactorEnabled())
@@ -267,6 +283,28 @@ public class LoginService {
                 .addKeyValue("ip_address", client.ipAddress()).addKeyValue("user_agent", client.userAgent())
                 .addKeyValue("device_id", client.deviceId()).log("OTP challenge created.");
         return challengeResponse(token, channel);
+    }
+
+    private void deliverOtp(OtpChallenge challenge, OtpNotificationContext context, boolean background) {
+        try {
+            // A queued challenge may have expired or been replaced before its worker starts.
+            if (background && challenges.find(challenge.token()).isEmpty()) return;
+            notifications.sendLoginOtp(challenge.channel(), challenge.destination(), challenge.code(), challenge.expiresAt(), context);
+        } catch (RuntimeException exception) {
+            discardFailedChallenge(challenge, exception);
+            if (!background) throw exception;
+        }
+    }
+
+    private void discardFailedChallenge(OtpChallenge challenge, RuntimeException failure) {
+        log.atWarn().addKeyValue("event", "login_otp_delivery_failed").addKeyValue("user_id", challenge.userId())
+                .addKeyValue("reason", failure.getClass().getSimpleName()).log("Login verification code could not be delivered.");
+        try {
+            challenges.deleteChallenge(challenge.token());
+        } catch (RuntimeException cleanupFailure) {
+            log.atWarn().addKeyValue("event", "login_otp_cleanup_failed").addKeyValue("user_id", challenge.userId())
+                    .addKeyValue("reason", cleanupFailure.getClass().getSimpleName()).log("Failed login delivery could not be cleaned up.");
+        }
     }
 
     private LoginResponse challengeResponse(String token, OtpChannel channel) {

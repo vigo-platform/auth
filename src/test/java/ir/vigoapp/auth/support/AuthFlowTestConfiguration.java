@@ -6,9 +6,12 @@ import ir.vigoapp.auth.security.SecureTokens;
 import ir.vigoapp.auth.service.AuthSettingService;
 import ir.vigoapp.auth.service.AuthProtectionService;
 import ir.vigoapp.auth.service.NotificationService;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.task.SyncTaskExecutor;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Clock;
@@ -22,6 +25,9 @@ public class AuthFlowTestConfiguration {
     @Bean @Primary AuthSettingService testSettings() { return classMock(AuthSettingService.class); }
     @Bean @Primary NotificationService testNotifications() { return classMock(NotificationService.class); }
     @Bean @Primary Clock testClock() { return classMock(Clock.class); }
+    @Bean @Primary @Qualifier("loginOtpDeliveryExecutor")
+    TaskExecutor testLoginOtpDeliveryExecutor() { return new SyncTaskExecutor(); }
+
     @Bean @Primary
     AuthProtectionService testProtection(StringRedisTemplate redis, AuthProperties properties, SecureTokens tokens) {
         return mock(AuthProtectionService.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)

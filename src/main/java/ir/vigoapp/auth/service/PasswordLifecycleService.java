@@ -128,7 +128,7 @@ public class PasswordLifecycleService {
                 .channel(channel).destination(destination).expiresAt(clock.instant().plus(properties.getOtpTtl())).build();
         String code = tokens.otp();
         repository.createChallenge(token, challenge, code);
-        deliver(token, challenge, code);
+        deliver(token, challenge, code, OtpNotificationContext.current());
         return otpResponse(token, channel);
     }
 
@@ -162,8 +162,9 @@ public class PasswordLifecycleService {
         policy.requirePasswordOtpEnabled(channel);
         String token = tokens.randomToken();
         var expiresAt = clock.instant().plus(properties.getOtpTtl());
+        var notificationContext = OtpNotificationContext.current();
         try {
-            recoveryExecutor.execute(() -> prepareRecovery(identifier, channel, token, key, expiresAt));
+            recoveryExecutor.execute(() -> prepareRecovery(identifier, channel, token, key, expiresAt, notificationContext));
         } catch (TaskRejectedException exception) {
             throw new AuthException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_SERVICE_UNAVAILABLE",
                     "Password recovery is temporarily unavailable.", "بازیابی رمز عبور موقتاً در دسترس نیست.");
@@ -171,7 +172,8 @@ public class PasswordLifecycleService {
         return otpResponse(token, channel);
     }
 
-    private void prepareRecovery(String identifier, OtpChannel channel, String token, String key, Instant expiresAt) {
+    private void prepareRecovery(String identifier, OtpChannel channel, String token, String key, Instant expiresAt,
+                                 OtpNotificationContext notificationContext) {
         try {
             if (!expiresAt.isAfter(clock.instant()) || protection.isLocked(key)) return;
             var user = findRecoveryAccount(identifier, channel);
@@ -186,7 +188,7 @@ public class PasswordLifecycleService {
                     .destination(destination).expiresAt(expiresAt).build();
             String code = tokens.otp();
             repository.createChallenge(token, challenge, code);
-            deliver(token, challenge, code);
+            deliver(token, challenge, code, notificationContext);
         } catch (RuntimeException exception) {
             logFailure("password_reset_delivery_unavailable", null, exception);
         }
@@ -237,7 +239,7 @@ public class PasswordLifecycleService {
                 .channel(channel).destination(destination).previousChannel(challenge.channel())
                 .previousDestination(challenge.destination()).expiresAt(clock.instant().plus(properties.getOtpTtl())).build();
         verifyResult(challenge, repository.advance(token, PasswordPurpose.RESET, otp, nextToken, next, nextCode));
-        deliver(nextToken, next, nextCode);
+        deliver(nextToken, next, nextCode, OtpNotificationContext.current());
         return otpResponse(nextToken, channel);
     }
 
@@ -412,12 +414,12 @@ public class PasswordLifecycleService {
         }
     }
 
-    private void deliver(String token, PasswordChallenge challenge, String code) {
+    private void deliver(String token, PasswordChallenge challenge, String code, OtpNotificationContext context) {
         try {
             if (challenge.purpose() == PasswordPurpose.RESET) {
-                notifications.sendPasswordResetOtp(challenge.userId(), challenge.channel(), challenge.destination(), code);
+                notifications.sendPasswordResetOtp(challenge.channel(), challenge.destination(), code, challenge.expiresAt(), context);
             } else {
-                notifications.sendPasswordChangeOtp(challenge.userId(), challenge.channel(), challenge.destination(), code);
+                notifications.sendPasswordChangeOtp(challenge.channel(), challenge.destination(), code, challenge.expiresAt(), context);
             }
         } catch (RuntimeException exception) {
             try {

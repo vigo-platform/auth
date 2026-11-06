@@ -51,6 +51,10 @@ public class OtpChallengeRepository {
                 .build());
     }
 
+    public void deleteChallenge(String token) {
+        redis.delete(PREFIX + token);
+    }
+
     public int failed(String token) {
         return Math.toIntExact(transition(token, "fail", ""));
     }

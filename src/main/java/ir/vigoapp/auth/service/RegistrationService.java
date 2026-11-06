@@ -65,7 +65,7 @@ public class RegistrationService {
         registrations.create(challenge, code);
         try {
             policy.requireRegistrationOtpEnabled(channel);
-            notifications.sendRegistrationOtp(channel, identifier, code);
+            notifications.sendRegistrationOtp(channel, identifier, code, challenge.expiresAt(), OtpNotificationContext.current());
         } catch (RuntimeException exception) {
             // Delete only our challenge; a newer request must not be invalidated by a slow failure.
             try {

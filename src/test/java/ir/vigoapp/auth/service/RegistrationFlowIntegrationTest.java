@@ -142,7 +142,9 @@ class RegistrationFlowIntegrationTest {
         current = current.toBuilder().loginEnabled(loginEnabled).defaultOtpChannel(OtpChannel.IN_APP).build();
         var challenge = start(input);
         verify(users, never()).createUser(any());
-        verify(notifications).sendRegistrationOtp(eq(channel), eq(normalized), eq(challenge.code()));
+        var expiresAt = registrations.findChallenge(challenge.token()).orElseThrow().expiresAt();
+        verify(notifications).sendRegistrationOtp(eq(channel), eq(normalized), eq(challenge.code()),
+                argThat(expiry -> expiry.toEpochMilli() == expiresAt.toEpochMilli()), any());
         var verified = call("/register/verify", Map.of("mfaToken", challenge.token(), "otp", challenge.code()));
         assertThat(verified.getResponse().getStatus()).isEqualTo(200);
         String proof = tree(verified).at("/data/registrationToken").asText();
@@ -601,7 +603,7 @@ class RegistrationFlowIntegrationTest {
     void notificationDeliveryFailureRemovesTheUnsentChallenge() throws Exception {
         doThrow(new AuthException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
                 "OTP_DELIVERY_UNAVAILABLE", "Test delivery failure.", "خطای ارسال آزمایشی."))
-                .when(notifications).sendRegistrationOtp(any(), anyString(), anyString());
+                .when(notifications).sendRegistrationOtp(any(), anyString(), anyString(), any(), any());
         assertError(call("/register/initiate", Map.of("identifier", "new@example.com")), 503, "OTP_DELIVERY_UNAVAILABLE");
         assertThat(redis.keys(PREFIX + "challenge:*")).isEmpty();
         assertThat(redis.keys(PREFIX + "grant:*")).isEmpty();

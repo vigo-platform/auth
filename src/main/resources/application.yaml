@@ -1,5 +1,5 @@
 server:
-  port: 8084
+  port: ${SERVER_PORT}
   forward-headers-strategy: framework
 
 spring:
